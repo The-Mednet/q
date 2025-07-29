@@ -1,6 +1,7 @@
 package smtp
 
 import (
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
@@ -194,6 +195,22 @@ func (s *Session) parseMessage(data []byte) error {
 	}
 
 	bodyContent := strings.TrimSpace(body.String())
+	
+	// Handle Content-Transfer-Encoding
+	if encoding := s.message.Headers["Content-Transfer-Encoding"]; encoding != "" {
+		switch strings.ToLower(encoding) {
+		case "base64":
+			if decoded, err := base64.StdEncoding.DecodeString(bodyContent); err == nil {
+				bodyContent = string(decoded)
+			} else {
+				log.Printf("Warning: Failed to decode Base64 body: %v", err)
+			}
+		case "quoted-printable":
+			// Could add quoted-printable decoding here if needed
+			log.Printf("Warning: Quoted-printable encoding detected but not decoded")
+		}
+	}
+	
 	if isHTML(s.message.Headers["Content-Type"]) {
 		s.message.HTML = bodyContent
 	} else {

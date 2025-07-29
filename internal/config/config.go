@@ -35,6 +35,7 @@ type Config struct {
 	LLM            LLMConfig
 	Server         ServerConfig
 	MySQL          MySQLConfig
+	Blaster        BlasterConfig
 }
 
 type SMTPConfig struct {
@@ -87,6 +88,11 @@ type MySQLConfig struct {
 	Database string
 }
 
+type BlasterConfig struct {
+	BaseURL string
+	APIKey  string
+}
+
 func Load() (*Config, error) {
 	godotenv.Load()
 
@@ -130,6 +136,10 @@ func Load() (*Config, error) {
 			User:     getEnvString("MYSQL_USER", "root"),
 			Password: getEnvString("MYSQL_PASSWORD", ""),
 			Database: getEnvString("MYSQL_DATABASE", "smtp_relay"),
+		},
+		Blaster: BlasterConfig{
+			BaseURL: getEnvString("BLASTER_BASE_URL", "http://localhost:3034"),
+			APIKey:  getEnvString("BLASTER_API_KEY", ""),
 		},
 	}
 

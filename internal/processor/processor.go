@@ -8,21 +8,24 @@ import (
 	"sync"
 	"time"
 
+	"smtp_relay/internal/blaster"
 	"smtp_relay/internal/config"
 	"smtp_relay/internal/gmail"
 	"smtp_relay/internal/llm"
 	"smtp_relay/internal/queue"
+	"smtp_relay/internal/variables"
 	"smtp_relay/internal/webhook"
 	"smtp_relay/pkg/models"
 )
 
 type QueueProcessor struct {
-	queue         queue.Queue
-	config        *config.Config
-	gmailClient   *gmail.Client
-	webhookClient *webhook.Client
-	personalizer  *llm.Personalizer
-	rateLimiter   *queue.WorkspaceAwareRateLimiter
+	queue            queue.Queue
+	config           *config.Config
+	gmailClient      *gmail.Client
+	webhookClient    *webhook.Client
+	personalizer     *llm.Personalizer
+	variableReplacer *variables.VariableReplacer
+	rateLimiter      *queue.WorkspaceAwareRateLimiter
 
 	mu         sync.Mutex
 	processing bool
@@ -58,13 +61,24 @@ func NewQueueProcessor(
 		workspaces[ws.ID] = ws
 	}
 
+	// Initialize variable replacer if blaster is configured
+	var variableReplacer *variables.VariableReplacer
+	if cfg.Blaster.BaseURL != "" && cfg.Blaster.APIKey != "" {
+		trendingClient := blaster.NewTrendingClient(cfg.Blaster.BaseURL, cfg.Blaster.APIKey)
+		variableReplacer = variables.NewVariableReplacer(trendingClient)
+		log.Printf("Variable replacer initialized with blaster API at %s", cfg.Blaster.BaseURL)
+	} else {
+		log.Printf("Variable replacer disabled - blaster API not configured")
+	}
+
 	processor := &QueueProcessor{
-		queue:         q,
-		config:        cfg,
-		gmailClient:   gc,
-		webhookClient: wc,
-		personalizer:  p,
-		rateLimiter:   queue.NewWorkspaceAwareRateLimiter(workspaces, cfg.Queue.DailyRateLimit),
+		queue:            q,
+		config:           cfg,
+		gmailClient:      gc,
+		webhookClient:    wc,
+		personalizer:     p,
+		variableReplacer: variableReplacer,
+		rateLimiter:      queue.NewWorkspaceAwareRateLimiter(workspaces, cfg.Queue.DailyRateLimit),
 	}
 
 	// Initialize rate limiter with historical data from the queue
@@ -173,6 +187,15 @@ func (p *QueueProcessor) processMessage(msg *models.Message) error {
 			p.webhookClient.SendRejectEvent(ctx, msg, "Gmail client not initialized")
 		}
 		return fmt.Errorf("Gmail client not initialized")
+	}
+
+	// Apply variable replacement first (before personalization)
+	if p.variableReplacer != nil {
+		err := p.variableReplacer.ReplaceVariables(ctx, msg)
+		if err != nil {
+			log.Printf("Warning: Failed to replace variables in message %s: %v", msg.ID, err)
+			// Continue with original message if variable replacement fails
+		}
 	}
 
 	// Apply LLM personalization if enabled

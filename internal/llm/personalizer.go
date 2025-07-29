@@ -119,7 +119,7 @@ func (p *Personalizer) PersonalizeWithCustomPrompt(ctx context.Context, msg *mod
 	}
 
 	// Get completion with custom prompts
-	completion, err := provider.GetCompletion(ctx, "custom_personalization", systemPrompt, userPrompt)
+	completion, err := provider.GetCompletion(ctx, "custom_personalization", systemPrompt, userPrompt, 4096)
 	if err != nil {
 		return fmt.Errorf("failed to get completion: %w", err)
 	}
