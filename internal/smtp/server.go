@@ -9,20 +9,20 @@ import (
 	"strings"
 	"time"
 
-	"smtp_relay/internal/config"
-	"smtp_relay/internal/gmail"
-	"smtp_relay/internal/queue"
-	"smtp_relay/pkg/models"
+	"relay/internal/config"
+	"relay/internal/gmail"
+	"relay/internal/queue"
+	"relay/pkg/models"
 
 	"github.com/emersion/go-smtp"
 	"github.com/google/uuid"
 )
 
 type Server struct {
-	config    *config.SMTPConfig
-	queue     queue.Queue
-	router    *gmail.WorkspaceRouter
-	server    *smtp.Server
+	config *config.SMTPConfig
+	queue  queue.Queue
+	router *gmail.WorkspaceRouter
+	server *smtp.Server
 }
 
 func NewServer(cfg *config.SMTPConfig, q queue.Queue, router *gmail.WorkspaceRouter) *Server {
@@ -79,7 +79,7 @@ func (s *Session) AuthPlain(username, password string) error {
 
 func (s *Session) Mail(from string, opts *smtp.MailOptions) error {
 	s.from = from
-	
+
 	// Determine workspace for this sender
 	var workspaceID string
 	if s.router != nil {
@@ -89,7 +89,7 @@ func (s *Session) Mail(from string, opts *smtp.MailOptions) error {
 			log.Printf("Warning: Could not route message from %s: %v", from, err)
 		}
 	}
-	
+
 	s.message = &models.Message{
 		ID:          uuid.New().String(),
 		From:        from,
@@ -195,7 +195,7 @@ func (s *Session) parseMessage(data []byte) error {
 	}
 
 	bodyContent := strings.TrimSpace(body.String())
-	
+
 	// Handle Content-Transfer-Encoding
 	if encoding := s.message.Headers["Content-Transfer-Encoding"]; encoding != "" {
 		switch strings.ToLower(encoding) {
@@ -210,7 +210,7 @@ func (s *Session) parseMessage(data []byte) error {
 			log.Printf("Warning: Quoted-printable encoding detected but not decoded")
 		}
 	}
-	
+
 	if isHTML(s.message.Headers["Content-Type"]) {
 		s.message.HTML = bodyContent
 	} else {

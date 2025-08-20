@@ -8,8 +8,8 @@ import (
 	"strconv"
 	"strings"
 
-	"smtp_relay/internal/blaster"
-	"smtp_relay/pkg/models"
+	"relay/internal/blaster"
+	"relay/pkg/models"
 )
 
 // VariableReplacer handles replacement of template variables in email content
@@ -26,8 +26,6 @@ func NewVariableReplacer(trendingClient *blaster.TrendingClient) *VariableReplac
 
 // ReplaceVariables processes email content and replaces template variables
 func (vr *VariableReplacer) ReplaceVariables(ctx context.Context, msg *models.Message) error {
-	log.Printf("DEBUG: ReplaceVariables called for message %s with UserID='%s'", msg.ID, msg.UserID)
-	
 	if vr.trendingClient == nil {
 		log.Printf("Warning: Trending client not configured, skipping variable replacement for message %s", msg.ID)
 		return nil
@@ -73,35 +71,33 @@ func (vr *VariableReplacer) ReplaceVariables(ctx context.Context, msg *models.Me
 func (vr *VariableReplacer) processContent(ctx context.Context, content string, msg *models.Message) (string, error) {
 	// Pattern to match <<VARIABLE_NAME>> or <<VARIABLE_NAME:param1,param2>>
 	pattern := regexp.MustCompile(`<<([A-Z_]+)(?::([^>]+))?>>`)
-	
+
 	result := content
 	matches := pattern.FindAllStringSubmatch(content, -1)
-	
-	log.Printf("DEBUG: Found %d variable matches in content", len(matches))
-	
+
 	for _, match := range matches {
 		if len(match) < 2 {
 			continue
 		}
-		
-		fullMatch := match[0]    // e.g., "<<TRENDING_QUESTION>>"
-		varName := match[1]      // e.g., "TRENDING_QUESTION"
+
+		fullMatch := match[0] // e.g., "<<TRENDING_QUESTION>>"
+		varName := match[1]   // e.g., "TRENDING_QUESTION"
 		params := ""
 		if len(match) > 2 {
-			params = match[2]     // e.g., "15,23,45" for topic IDs
+			params = match[2] // e.g., "15,23,45" for topic IDs
 		}
-		
+
 		replacement, err := vr.getVariableReplacement(ctx, varName, params, msg)
 		if err != nil {
 			log.Printf("Warning: Failed to replace variable %s: %v", varName, err)
 			// Keep the original variable if replacement fails
 			continue
 		}
-		
+
 		result = strings.ReplaceAll(result, fullMatch, replacement)
 		log.Printf("Replaced variable %s in message %s", varName, msg.ID)
 	}
-	
+
 	return result, nil
 }
 
@@ -121,7 +117,7 @@ func (vr *VariableReplacer) getTrendingQuestionReplacement(ctx context.Context, 
 	var userID *int
 	var topicIds []int
 	var questionIds []int
-	
+
 	if params != "" {
 		// Check if params start with "user:" for user-based trending
 		if strings.HasPrefix(params, "user:") {
@@ -156,7 +152,7 @@ func (vr *VariableReplacer) getTrendingQuestionReplacement(ctx context.Context, 
 			}
 		}
 	}
-	
+
 	// Try to extract user ID from message if not provided in params
 	if userID == nil {
 		// First try the UserID field from the message
@@ -165,7 +161,7 @@ func (vr *VariableReplacer) getTrendingQuestionReplacement(ctx context.Context, 
 				userID = &id
 			}
 		}
-		
+
 		// Fallback to metadata if UserID field is empty
 		if userID == nil {
 			if recipientData, ok := msg.Metadata["recipient"]; ok {
@@ -187,13 +183,13 @@ func (vr *VariableReplacer) getTrendingQuestionReplacement(ctx context.Context, 
 			}
 		}
 	}
-	
+
 	// Get trending content from the API
 	trending, err := vr.trendingClient.GetTrendingContent(ctx, userID, topicIds, questionIds)
 	if err != nil {
 		return "", fmt.Errorf("failed to get trending content: %w", err)
 	}
-	
+
 	// Format the trending content for email
 	return vr.formatTrendingContent(trending), nil
 }
@@ -202,18 +198,18 @@ func (vr *VariableReplacer) getTrendingQuestionReplacement(ctx context.Context, 
 func (vr *VariableReplacer) formatTrendingContent(trending *blaster.TrendingResponse) string {
 	// Create a clean, professional summary with the trending question
 	var builder strings.Builder
-	
+
 	// Add topic prefix if available
 	if trending.TopicName != "" {
 		builder.WriteString(fmt.Sprintf("A recent question from %s:\n\n", trending.TopicName))
 	}
-	
+
 	// Add the thread title as a header (no emoji, no markdown)
 	builder.WriteString(fmt.Sprintf("%s\n\n", trending.ThreadTitle))
-	
+
 	// Add the summary (just the content, no extra formatting)
 	builder.WriteString(trending.Summary)
-	
+
 	return builder.String()
 }
 
@@ -227,10 +223,10 @@ func HasVariables(content string) bool {
 func GetVariableNames(content string) []string {
 	pattern := regexp.MustCompile(`<<([A-Z_]+)(?::[^>]+)?>>`)
 	matches := pattern.FindAllStringSubmatch(content, -1)
-	
+
 	var names []string
 	seen := make(map[string]bool)
-	
+
 	for _, match := range matches {
 		if len(match) >= 2 {
 			name := match[1]
@@ -240,6 +236,38 @@ func GetVariableNames(content string) []string {
 			}
 		}
 	}
-	
+
 	return names
+}
+
+// ValidateNoUnresolvedVariables checks if a message contains any unresolved <<>> variables
+func ValidateNoUnresolvedVariables(msg *models.Message) error {
+	var unresolvedVars []string
+
+	// Check subject for unresolved variables
+	if msg.Subject != "" {
+		if vars := GetVariableNames(msg.Subject); len(vars) > 0 {
+			unresolvedVars = append(unresolvedVars, vars...)
+		}
+	}
+
+	// Check HTML body for unresolved variables
+	if msg.HTML != "" {
+		if vars := GetVariableNames(msg.HTML); len(vars) > 0 {
+			unresolvedVars = append(unresolvedVars, vars...)
+		}
+	}
+
+	// Check text body for unresolved variables
+	if msg.Text != "" {
+		if vars := GetVariableNames(msg.Text); len(vars) > 0 {
+			unresolvedVars = append(unresolvedVars, vars...)
+		}
+	}
+
+	if len(unresolvedVars) > 0 {
+		return fmt.Errorf("message contains unresolved variables: %v", unresolvedVars)
+	}
+
+	return nil
 }

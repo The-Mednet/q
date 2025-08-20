@@ -7,10 +7,11 @@ import (
 	"log"
 	"net/http"
 	"strconv"
+	"time"
 
-	"smtp_relay/internal/gmail"
-	"smtp_relay/internal/processor"
-	"smtp_relay/pkg/models"
+	"relay/internal/gmail"
+	"relay/internal/recipient"
+	"relay/pkg/models"
 
 	"github.com/gorilla/mux"
 )
@@ -22,19 +23,36 @@ type QueueStats interface {
 	Remove(id string) error
 }
 
-type Server struct {
-	queue       QueueStats
-	router      *mux.Router
-	gmailClient *gmail.Client
-	processor   *processor.QueueProcessor
+// ProcessorInterface defines the interface that processors must implement for WebUI
+type ProcessorInterface interface {
+	GetStatus() (bool, time.Time, any)
+	GetRateLimitStatus() (int, int, map[string]interface{})
 }
 
-func NewServer(q QueueStats, gc *gmail.Client, p *processor.QueueProcessor) *Server {
+type Server struct {
+	queue            QueueStats
+	router           *mux.Router
+	gmailClient      *gmail.Client
+	processor        ProcessorInterface
+	recipientService *recipient.Service
+	recipientAPI     *recipient.APIHandler
+	recipientWebhook *recipient.WebhookHandler
+}
+
+func NewServer(q QueueStats, gc *gmail.Client, p ProcessorInterface, rs *recipient.Service) *Server {
 	s := &Server{
-		queue:       q,
-		router:      mux.NewRouter(),
-		gmailClient: gc,
-		processor:   p,
+		queue:            q,
+		router:           mux.NewRouter(),
+		gmailClient:      gc,
+		processor:        p,
+		recipientService: rs,
+	}
+
+	// Initialize recipient API and webhook handlers if service is available
+	if rs != nil {
+		s.recipientAPI = recipient.NewAPIHandler(rs)
+		s.recipientWebhook = recipient.NewWebhookHandler(rs)
+		log.Println("Recipient API and webhook handlers initialized")
 	}
 
 	s.setupRoutes()
@@ -52,6 +70,26 @@ func (s *Server) setupRoutes() {
 	s.router.HandleFunc("/api/rate-limit", s.handleGetRateLimit).Methods("GET")
 	s.router.HandleFunc("/validate", s.handleValidateServiceAccount).Methods("GET")
 	s.router.HandleFunc("/webhook/test", s.handleWebhookTest).Methods("POST")
+
+	// Recipient tracking API routes (defensive programming - check if service is available)
+	if s.recipientAPI != nil {
+		s.router.HandleFunc("/api/recipients", s.recipientAPI.ListRecipients).Methods("GET")
+		s.router.HandleFunc("/api/recipients/{email}", s.recipientAPI.GetRecipient).Methods("GET")
+		s.router.HandleFunc("/api/recipients/{email}/summary", s.recipientAPI.GetRecipientSummary).Methods("GET")
+		s.router.HandleFunc("/api/recipients/{email}/status", s.recipientAPI.UpdateRecipientStatus).Methods("PUT")
+		s.router.HandleFunc("/api/recipients/cleanup", s.recipientAPI.CleanupRecipients).Methods("POST")
+		s.router.HandleFunc("/api/campaigns/{campaign_id}/stats", s.recipientAPI.GetCampaignStats).Methods("GET")
+		log.Println("Recipient API routes registered successfully")
+	}
+
+	// Webhook routes for engagement tracking (defensive programming - check if handler is available)
+	if s.recipientWebhook != nil {
+		s.router.HandleFunc("/webhook/mandrill", s.recipientWebhook.HandleMandrillWebhook).Methods("POST")
+		s.router.HandleFunc("/webhook/pixel", s.recipientWebhook.HandlePixelTracking).Methods("GET")
+		s.router.HandleFunc("/webhook/click", s.recipientWebhook.HandleLinkTracking).Methods("GET")
+		s.router.HandleFunc("/webhook/unsubscribe", s.recipientWebhook.HandleUnsubscribe).Methods("GET", "POST")
+		log.Println("Recipient webhook routes registered successfully")
+	}
 }
 
 func (s *Server) Start(port int) error {
@@ -255,7 +293,7 @@ func (s *Server) handleWebhookTest(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleProcessQueue(w http.ResponseWriter, r *http.Request) {
 	if s.processor == nil {
-		http.Error(w, "Queue processor not available", http.StatusServiceUnavailable)
+		http.Error(w, "Queue processor not available - new gateway mode", http.StatusServiceUnavailable)
 		return
 	}
 
@@ -271,13 +309,8 @@ func (s *Server) handleProcessQueue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Trigger processing in background
-	go func() {
-		err := s.processor.Process()
-		if err != nil {
-			log.Printf("Manual queue processing error: %v", err)
-		}
-	}()
+	// Note: Manual processing is not supported with the unified processor
+	// The unified processor runs continuously in the background
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{

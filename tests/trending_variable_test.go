@@ -9,9 +9,9 @@ import (
 	"strings"
 	"testing"
 
-	"smtp_relay/internal/blaster"
-	"smtp_relay/internal/variables"
-	"smtp_relay/pkg/models"
+	"relay/internal/blaster"
+	"relay/internal/variables"
+	"relay/pkg/models"
 )
 
 // TestTrendingVariableReplacement tests the <<TRENDING_QUESTION>> variable replacement
@@ -87,36 +87,36 @@ func TestTrendingVariableReplacement(t *testing.T) {
 		{
 			name: "Replace trending question in text body",
 			message: &models.Message{
-				ID:      "test-2",
-				Subject: "Test Email",
-				HTML:    "",
-				Text:    "Check out this trending question:\n\n<<TRENDING_QUESTION:115>>\n\nBest regards,",
-				To:      []string{"doctor@example.com"},
-				From:    "noreply@mednet.com",
+				ID:       "test-2",
+				Subject:  "Test Email",
+				HTML:     "",
+				Text:     "Check out this trending question:\n\n<<TRENDING_QUESTION:115>>\n\nBest regards,",
+				To:       []string{"doctor@example.com"},
+				From:     "noreply@mednet.com",
 				Metadata: map[string]interface{}{},
 			},
 		},
 		{
 			name: "Replace trending question with topic IDs in subject",
 			message: &models.Message{
-				ID:      "test-3",
-				Subject: "Trending: <<TRENDING_QUESTION:115,304>>",
-				HTML:    "",
-				Text:    "See subject for trending question.",
-				To:      []string{"doctor@example.com"},
-				From:    "noreply@mednet.com",
+				ID:       "test-3",
+				Subject:  "Trending: <<TRENDING_QUESTION:115,304>>",
+				HTML:     "",
+				Text:     "See subject for trending question.",
+				To:       []string{"doctor@example.com"},
+				From:     "noreply@mednet.com",
 				Metadata: map[string]interface{}{},
 			},
 		},
 		{
 			name: "Replace trending question with question IDs",
 			message: &models.Message{
-				ID:      "test-4",
-				Subject: "Check out these questions",
-				HTML:    "<p>Here are some relevant discussions:</p><br><<TRENDING_QUESTION:question:12345,67890>><br><p>Hope you find them useful!</p>",
-				Text:    "",
-				To:      []string{"doctor@example.com"},
-				From:    "noreply@mednet.com",
+				ID:       "test-4",
+				Subject:  "Check out these questions",
+				HTML:     "<p>Here are some relevant discussions:</p><br><<TRENDING_QUESTION:question:12345,67890>><br><p>Hope you find them useful!</p>",
+				Text:     "",
+				To:       []string{"doctor@example.com"},
+				From:     "noreply@mednet.com",
 				Metadata: map[string]interface{}{},
 			},
 		},
@@ -144,7 +144,7 @@ func TestTrendingVariableReplacement(t *testing.T) {
 					t.Errorf("HTML does not contain expected trending content")
 				}
 			}
-			
+
 			if tt.message.Text != "" && containsVariable(originalText) {
 				if tt.message.Text == originalText {
 					t.Error("Text content was not modified despite containing variables")
@@ -153,7 +153,7 @@ func TestTrendingVariableReplacement(t *testing.T) {
 					t.Errorf("Text does not contain expected trending content")
 				}
 			}
-			
+
 			if containsVariable(originalSubject) {
 				if tt.message.Subject == originalSubject {
 					t.Error("Subject was not modified despite containing variables")

@@ -1,21 +1,49 @@
 package main
 
 import (
+	"context"
+	"database/sql"
 	"log"
 	"os"
 	"os/signal"
 	"sync"
 	"syscall"
+	"time"
 
-	"smtp_relay/internal/config"
-	"smtp_relay/internal/gmail"
-	"smtp_relay/internal/llm"
-	"smtp_relay/internal/processor"
-	"smtp_relay/internal/queue"
-	"smtp_relay/internal/smtp"
-	"smtp_relay/internal/webhook"
-	"smtp_relay/internal/webui"
+	"relay/internal/config"
+	"relay/internal/llm"
+	"relay/internal/processor"
+	"relay/internal/provider"
+	"relay/internal/queue"
+	"relay/internal/recipient"
+	"relay/internal/smtp"
+	"relay/internal/webhook"
+	"relay/internal/webui"
+	"relay/internal/workspace"
+
+	_ "github.com/go-sql-driver/mysql"
 )
+
+// LegacyProcessorAdapter adapts the unified processor for WebUI compatibility
+type LegacyProcessorAdapter struct {
+	unifiedProcessor *processor.UnifiedProcessor
+}
+
+func (l *LegacyProcessorAdapter) GetStatus() (bool, time.Time, any) {
+	return l.unifiedProcessor.GetStatus()
+}
+
+func (l *LegacyProcessorAdapter) GetRateLimitStatus() (int, int, map[string]interface{}) {
+	totalSent, workspaceCount, workspaces := l.unifiedProcessor.GetRateLimitStatus()
+	
+	// Convert workspaces map to interface{} map for compatibility
+	workspacesInterface := make(map[string]interface{})
+	for k, v := range workspaces {
+		workspacesInterface[k] = v
+	}
+	
+	return totalSent, workspaceCount, workspacesInterface
+}
 
 func main() {
 	cfg, err := config.Load()
@@ -25,6 +53,7 @@ func main() {
 
 	var q queue.Queue
 	var statsQueue webui.QueueStats
+	var recipientService *recipient.Service
 
 	// Try MySQL first, fall back to memory queue
 	mysqlQueue, err := queue.NewMySQLQueue(&cfg.MySQL)
@@ -34,17 +63,82 @@ func main() {
 		memQueue := queue.NewMemoryQueue()
 		q = memQueue
 		statsQueue = memQueue
+		log.Println("Warning: Recipient tracking disabled - requires MySQL database")
 	} else {
 		q = mysqlQueue
 		statsQueue = mysqlQueue
 		defer mysqlQueue.Close()
+
+		// Initialize recipient service with the same database connection
+		db, err := sql.Open("mysql", cfg.MySQL.GetDSN())
+		if err != nil {
+			log.Printf("Warning: Failed to initialize recipient service database connection: %v", err)
+		} else {
+			// Configure connection pool for optimal performance and reliability
+			db.SetMaxOpenConns(25)                 // Maximum number of open connections
+			db.SetMaxIdleConns(10)                 // Maximum number of idle connections
+			db.SetConnMaxLifetime(5 * time.Minute) // Connection lifetime (5 minutes)
+
+			// Test the connection
+			if err := db.Ping(); err != nil {
+				log.Printf("Warning: Failed to ping recipient service database: %v", err)
+				db.Close()
+			} else {
+				recipientService = recipient.NewService(db)
+				log.Println("Recipient tracking service initialized successfully with optimized connection pool")
+
+				// Ensure database cleanup on shutdown
+				defer func() {
+					if err := db.Close(); err != nil {
+						log.Printf("Warning: Error closing recipient service database connection: %v", err)
+					}
+				}()
+			}
+		}
 	}
 
-	// Initialize Gmail client
-	gmailClient, err := gmail.NewClient(&cfg.Gmail)
+	// Initialize workspace manager
+	workspaceFile := os.Getenv("WORKSPACE_CONFIG_FILE")
+	if workspaceFile == "" {
+		workspaceFile = "workspace.json" // Default workspace file
+	}
+	
+	workspaceManager, err := workspace.NewManager(workspaceFile)
 	if err != nil {
-		log.Printf("Warning: Failed to initialize Gmail client: %v", err)
-		log.Println("Gmail sending will not be available until credentials are configured")
+		log.Fatalf("Failed to initialize workspace manager: %v", err)
+	}
+	
+	// Validate workspace configuration
+	if err := workspaceManager.ValidateConfiguration(); err != nil {
+		log.Fatalf("Invalid workspace configuration: %v", err)
+	}
+	
+	log.Printf("Workspace manager initialized with %d workspaces", len(workspaceManager.GetWorkspaceIDs()))
+
+	// Initialize provider router
+	providerRouter := provider.NewRouter(workspaceManager)
+	
+	// Initialize all providers based on workspace configuration
+	if err := providerRouter.InitializeProviders(); err != nil {
+		log.Fatalf("Failed to initialize providers: %v", err)
+	}
+	
+	// Perform initial health checks on all providers
+	healthResults := providerRouter.HealthCheckAll(context.Background())
+	healthyProviders := 0
+	for providerID, healthErr := range healthResults {
+		if healthErr == nil {
+			healthyProviders++
+			log.Printf("Provider %s is healthy", providerID)
+		} else {
+			log.Printf("Provider %s is unhealthy: %v", providerID, healthErr)
+		}
+	}
+	
+	if healthyProviders == 0 {
+		log.Printf("Warning: No providers are currently healthy, but continuing startup")
+	} else {
+		log.Printf("%d out of %d providers are healthy", healthyProviders, len(healthResults))
 	}
 
 	// Initialize webhook client
@@ -56,17 +150,20 @@ func main() {
 		log.Println("LLM personalization enabled")
 	}
 
-	// Initialize queue processor
-	queueProcessor := processor.NewQueueProcessor(q, cfg, gmailClient, webhookClient, personalizer)
+	// Initialize unified processor
+	log.Println("Starting with unified email provider system")
+	
+	unifiedProcessor := processor.NewUnifiedProcessor(
+		q, cfg, workspaceManager, providerRouter,
+		webhookClient, personalizer, recipientService,
+	)
 
-	// Get workspace router from Gmail client for SMTP server
-	var workspaceRouter *gmail.WorkspaceRouter
-	if gmailClient != nil {
-		workspaceRouter = gmailClient.GetRouter()
-	}
-
-	smtpServer := smtp.NewServer(&cfg.SMTP, q, workspaceRouter)
-	webServer := webui.NewServer(statsQueue, gmailClient, queueProcessor)
+	// For SMTP server, we no longer need the workspace router since the unified processor handles routing
+	smtpServer := smtp.NewServer(&cfg.SMTP, q, nil)
+	
+	// For WebUI server, create a compatibility processor interface  
+	legacyProcessor := &LegacyProcessorAdapter{unifiedProcessor: unifiedProcessor}
+	webServer := webui.NewServer(statsQueue, nil, legacyProcessor, recipientService)
 
 	var wg sync.WaitGroup
 	wg.Add(3)
@@ -87,7 +184,7 @@ func main() {
 
 	go func() {
 		defer wg.Done()
-		queueProcessor.Start()
+		unifiedProcessor.Start()
 	}()
 
 	sigChan := make(chan os.Signal, 1)
@@ -96,6 +193,12 @@ func main() {
 
 	log.Println("Shutting down servers...")
 	smtpServer.Stop()
+	
+	// Stop the unified processor gracefully
+	unifiedProcessor.Stop()
+	
+	// Shutdown provider router
+	providerRouter.Shutdown(nil)
 
 	wg.Wait()
 	log.Println("Servers stopped")

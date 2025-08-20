@@ -8,8 +8,8 @@ import (
 	"net/http"
 	"time"
 
-	"smtp_relay/internal/config"
-	"smtp_relay/pkg/models"
+	"relay/internal/config"
+	"relay/pkg/models"
 )
 
 type Client struct {

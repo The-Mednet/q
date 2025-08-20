@@ -5,7 +5,7 @@ import (
 	"sync"
 	"time"
 
-	"smtp_relay/pkg/models"
+	"relay/pkg/models"
 )
 
 type MemoryQueue struct {

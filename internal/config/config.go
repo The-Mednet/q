@@ -2,40 +2,74 @@ package config
 
 import (
 	"encoding/json"
+	"fmt"
+	"log"
 	"os"
 	"time"
+
+	"relay/internal/gateway"
 
 	"github.com/joho/godotenv"
 )
 
 type WorkspaceConfig struct {
-	ID                 string                   `json:"id"`
-	Domain             string                   `json:"domain"`
-	ServiceAccountFile string                   `json:"service_account_file"`
-	DisplayName        string                   `json:"display_name"`
-	RateLimits         WorkspaceRateLimitConfig `json:"rate_limits,omitempty"`
+	ID          string                   `json:"id"`
+	Domain      string                   `json:"domain"`
+	DisplayName string                   `json:"display_name"`
+	RateLimits  WorkspaceRateLimitConfig `json:"rate_limits,omitempty"`
+
+	// Gateway configurations - at least one must be specified
+	Gmail   *WorkspaceGmailConfig   `json:"gmail,omitempty"`
+	Mailgun *WorkspaceMailgunConfig `json:"mailgun,omitempty"`
+}
+
+// WorkspaceGmailConfig contains Gmail-specific settings for a workspace
+type WorkspaceGmailConfig struct {
+	ServiceAccountFile string `json:"service_account_file"`
+	Enabled            bool   `json:"enabled"`
+	DefaultSender      string `json:"default_sender,omitempty"` // Fallback sender when impersonation fails
+	RequireValidSender bool   `json:"require_valid_sender,omitempty"` // Whether to validate sender emails
+}
+
+// WorkspaceMailgunConfig contains Mailgun-specific settings for a workspace
+type WorkspaceMailgunConfig struct {
+	APIKey   string                   `json:"api_key"`
+	Domain   string                   `json:"domain"`
+	BaseURL  string                   `json:"base_url,omitempty"`
+	Region   string                   `json:"region,omitempty"`
+	Enabled  bool                     `json:"enabled"`
+	Tracking WorkspaceMailgunTracking `json:"tracking,omitempty"`
+	Tags     []string                 `json:"default_tags,omitempty"`
+}
+
+// WorkspaceMailgunTracking configures Mailgun tracking for a workspace
+type WorkspaceMailgunTracking struct {
+	Opens       bool `json:"opens"`
+	Clicks      bool `json:"clicks"`
+	Unsubscribe bool `json:"unsubscribe"`
 }
 
 type WorkspaceRateLimitConfig struct {
 	// Daily limit for entire workspace (optional - overrides global default)
 	WorkspaceDaily int `json:"workspace_daily,omitempty"`
-	
+
 	// Daily limit per user in this workspace (optional - overrides workspace and global)
 	PerUserDaily int `json:"per_user_daily,omitempty"`
-	
+
 	// Custom per-user limits (email -> daily limit)
 	CustomUserLimits map[string]int `json:"custom_user_limits,omitempty"`
 }
 
 type Config struct {
-	SMTP           SMTPConfig
-	Gmail          GmailConfig
-	Queue          QueueConfig
-	Webhook        WebhookConfig
-	LLM            LLMConfig
-	Server         ServerConfig
-	MySQL          MySQLConfig
-	Blaster        BlasterConfig
+	SMTP    SMTPConfig
+	Gmail   GmailConfig
+	Gateway *EnhancedGatewayConfig // New gateway configuration
+	Queue   QueueConfig
+	Webhook WebhookConfig
+	LLM     LLMConfig
+	Server  ServerConfig
+	MySQL   MySQLConfig
+	Blaster BlasterConfig
 }
 
 type SMTPConfig struct {
@@ -47,8 +81,8 @@ type SMTPConfig struct {
 }
 
 type GmailConfig struct {
-	Workspaces         []WorkspaceConfig
-	LegacyDomains      []string // domains that get randomly assigned to workspaces
+	Workspaces    []WorkspaceConfig
+	LegacyDomains []string // domains that get randomly assigned to workspaces
 }
 
 type QueueConfig struct {
@@ -88,10 +122,17 @@ type MySQLConfig struct {
 	Database string
 }
 
+// GetDSN returns the MySQL Data Source Name for database connections
+func (m *MySQLConfig) GetDSN() string {
+	return fmt.Sprintf("%s:%s@tcp(%s:%d)/%s?parseTime=true&charset=utf8mb4&collation=utf8mb4_unicode_ci",
+		m.User, m.Password, m.Host, m.Port, m.Database)
+}
+
 type BlasterConfig struct {
 	BaseURL string
 	APIKey  string
 }
+
 
 func Load() (*Config, error) {
 	godotenv.Load()
@@ -104,7 +145,8 @@ func Load() (*Config, error) {
 			ReadTimeout:  getEnvDuration("SMTP_READ_TIMEOUT", 10*time.Second),
 			WriteTimeout: getEnvDuration("SMTP_WRITE_TIMEOUT", 10*time.Second),
 		},
-		Gmail: loadGmailConfig(),
+		Gmail:   loadGmailConfig(),
+		Gateway: loadGatewayConfig(),
 		Queue: QueueConfig{
 			ProcessInterval: getEnvDuration("QUEUE_PROCESS_INTERVAL", 30*time.Second),
 			BatchSize:       getEnvInt("QUEUE_BATCH_SIZE", 10),
@@ -135,7 +177,7 @@ func Load() (*Config, error) {
 			Port:     getEnvInt("MYSQL_PORT", 3306),
 			User:     getEnvString("MYSQL_USER", "root"),
 			Password: getEnvString("MYSQL_PASSWORD", ""),
-			Database: getEnvString("MYSQL_DATABASE", "smtp_relay"),
+			Database: getEnvString("MYSQL_DATABASE", "relay"),
 		},
 		Blaster: BlasterConfig{
 			BaseURL: getEnvString("BLASTER_BASE_URL", "http://localhost:3034"),
@@ -207,15 +249,18 @@ func loadGmailConfig() GmailConfig {
 	// Fall back to single workspace from env vars (backward compatibility)
 	serviceAccountFile := getEnvString("GMAIL_SERVICE_ACCOUNT_FILE", "credentials/service-account.json")
 	domain := getEnvString("GMAIL_DOMAIN", "joinmednet.org")
-	
+
 	if serviceAccountFile != "" && domain != "" {
 		return GmailConfig{
 			Workspaces: []WorkspaceConfig{
 				{
-					ID:                 domain,
-					Domain:             domain,
-					ServiceAccountFile: serviceAccountFile,
-					DisplayName:        domain,
+					ID:          domain,
+					Domain:      domain,
+					DisplayName: domain,
+					Gmail: &WorkspaceGmailConfig{
+						ServiceAccountFile: serviceAccountFile,
+						Enabled:            true,
+					},
 				},
 			},
 			LegacyDomains: getEnvStringArray("GMAIL_LEGACY_DOMAINS", []string{"mednet.org", "themednet.org"}),
@@ -226,6 +271,13 @@ func loadGmailConfig() GmailConfig {
 }
 
 func loadWorkspacesFromFile(filename string) []WorkspaceConfig {
+	// First try to load from environment variable (for AWS Secrets Manager, etc.)
+	if envConfig := loadWorkspacesFromEnv(); len(envConfig) > 0 {
+		log.Println("Loaded workspace configuration from environment variable")
+		return envConfig
+	}
+
+	// Fall back to file-based loading
 	data, err := os.ReadFile(filename)
 	if err != nil {
 		return nil
@@ -233,6 +285,24 @@ func loadWorkspacesFromFile(filename string) []WorkspaceConfig {
 
 	var workspaces []WorkspaceConfig
 	if err := json.Unmarshal(data, &workspaces); err != nil {
+		return nil
+	}
+
+	log.Printf("Loaded workspace configuration from file: %s", filename)
+	return workspaces
+}
+
+// loadWorkspacesFromEnv loads workspace configuration from environment variable
+func loadWorkspacesFromEnv() []WorkspaceConfig {
+	// Check for workspace configuration in environment variable
+	envConfig := getEnvString("GMAIL_WORKSPACES_JSON", "")
+	if envConfig == "" {
+		return nil
+	}
+
+	var workspaces []WorkspaceConfig
+	if err := json.Unmarshal([]byte(envConfig), &workspaces); err != nil {
+		log.Printf("Warning: Failed to parse GMAIL_WORKSPACES_JSON: %v", err)
 		return nil
 	}
 
@@ -244,12 +314,71 @@ func getEnvStringArray(key string, defaultValue []string) []string {
 	if value == "" {
 		return defaultValue
 	}
-	
+
 	var result []string
 	if err := json.Unmarshal([]byte(value), &result); err != nil {
 		// If JSON parsing fails, treat as comma-separated string
 		return []string{value}
 	}
-	
+
 	return result
+}
+
+// loadGatewayConfig loads the enhanced gateway configuration
+func loadGatewayConfig() *EnhancedGatewayConfig {
+	// Try to load from file first
+	gatewayConfigFile := getEnvString("GATEWAY_CONFIG_FILE", "")
+	if gatewayConfigFile != "" {
+		if config, err := LoadGatewayConfig(gatewayConfigFile); err == nil {
+			log.Printf("Loaded gateway configuration from %s", gatewayConfigFile)
+			return config
+		} else {
+			log.Printf("Warning: Failed to load gateway configuration from %s: %v", gatewayConfigFile, err)
+		}
+	}
+
+	// Try to load legacy workspaces file for backward compatibility
+	workspacesFile := getEnvString("GMAIL_WORKSPACES_FILE", "")
+	if workspacesFile != "" {
+		if config, err := LoadGatewayConfig(workspacesFile); err == nil {
+			log.Printf("Loaded legacy workspace configuration from %s (converted to gateway format)", workspacesFile)
+			return config
+		}
+	}
+
+	// Default configuration for new deployments
+	log.Printf("No gateway configuration file found, using defaults")
+	return &EnhancedGatewayConfig{
+		Gateways: []GatewayConfig{},
+		GlobalDefaults: GlobalGatewayDefaults{
+			RateLimits: GatewayRateLimitConfig{
+				WorkspaceDaily: 2000,
+				PerUserDaily:   200,
+				PerHour:        50,
+				BurstLimit:     10,
+			},
+			CircuitBreaker: CircuitBreakerConfig{
+				Enabled:          true,
+				FailureThreshold: 10,
+				SuccessThreshold: 5,
+				Timeout:          "60s",
+				MaxRequests:      100,
+			},
+			HealthCheck: HealthCheckConfig{
+				Enabled:          true,
+				Interval:         "30s",
+				Timeout:          "10s",
+				FailureThreshold: 3,
+				SuccessThreshold: 2,
+			},
+			RoutingStrategy: gateway.StrategyPriority,
+		},
+		Routing: GlobalRoutingConfig{
+			Strategy:               gateway.StrategyPriority,
+			FailoverEnabled:        true,
+			LoadBalancingEnabled:   false,
+			HealthCheckRequired:    true,
+			CircuitBreakerRequired: true,
+		},
+	}
 }

@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"smtp_relay/internal/config"
+	"relay/internal/config"
 )
 
 // WorkspaceRouter determines which workspace to use for sending emails
@@ -22,7 +22,10 @@ func NewWorkspaceRouter(cfg *config.GmailConfig) *WorkspaceRouter {
 	workspaces := make(map[string]*config.WorkspaceConfig)
 	for i := range cfg.Workspaces {
 		ws := &cfg.Workspaces[i]
-		workspaces[ws.Domain] = ws
+		// Only include workspaces that have Gmail enabled
+		if ws.Gmail != nil && ws.Gmail.Enabled {
+			workspaces[ws.Domain] = ws
+		}
 	}
 
 	return &WorkspaceRouter{

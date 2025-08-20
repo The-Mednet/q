@@ -63,7 +63,7 @@ Webhook Format:
 
 ```bash
 git clone <repository-url>
-cd smtp_relay
+cd relay
 go mod download
 ```
 
@@ -104,7 +104,7 @@ MYSQL_HOST=localhost
 MYSQL_PORT=3306
 MYSQL_USER=root
 MYSQL_PASSWORD=your-password
-MYSQL_DATABASE=smtp_relay
+MYSQL_DATABASE=relay
 
 # Gmail Settings
 GMAIL_SENDER_EMAIL=your-email@example.com
@@ -133,8 +133,8 @@ go run cmd/server/main.go
 Build and run:
 
 ```bash
-go build -o smtp_relay cmd/server/main.go
-./smtp_relay
+go build -o relay cmd/server/main.go
+./relay
 ```
 
 ## Usage
@@ -276,13 +276,13 @@ docker-compose up -d
 
 ```bash
 # Build image
-docker build -t smtp_relay .
+docker build -t relay .
 
 # Start all services
 docker-compose up -d
 
 # View logs
-docker-compose logs -f smtp_relay
+docker-compose logs -f relay
 
 # Stop services
 docker-compose down

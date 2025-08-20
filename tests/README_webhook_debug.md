@@ -71,14 +71,14 @@ All requests are logged with detailed information:
   "timestamp": "2025-01-29T12:34:56.789Z",
   "endpoint": "/webhook/mandrill",
   "method": "POST",
-  "url": "http://localhost:8000/webhook/mandrill?source=smtp_relay",
+  "url": "http://localhost:8000/webhook/mandrill?source=relay",
   "headers": {
     "content-type": "application/x-www-form-urlencoded",
     "user-agent": "SMTP-Relay/1.0",
     "x-request-id": "req-123"
   },
   "query_params": {
-    "source": "smtp_relay"
+    "source": "relay"
   },
   "body": {
     "content_type": "application/x-www-form-urlencoded",

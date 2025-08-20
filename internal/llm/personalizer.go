@@ -6,8 +6,8 @@ import (
 	"log"
 	"strings"
 
-	"smtp_relay/internal/config"
-	"smtp_relay/pkg/models"
+	"relay/internal/config"
+	"relay/pkg/models"
 
 	blasterLLM "blaster/pkg/llm"
 	"blaster/pkg/types"

@@ -8,14 +8,15 @@ import (
 	"sync"
 	"time"
 
-	"smtp_relay/internal/blaster"
-	"smtp_relay/internal/config"
-	"smtp_relay/internal/gmail"
-	"smtp_relay/internal/llm"
-	"smtp_relay/internal/queue"
-	"smtp_relay/internal/variables"
-	"smtp_relay/internal/webhook"
-	"smtp_relay/pkg/models"
+	"relay/internal/blaster"
+	"relay/internal/config"
+	"relay/internal/gmail"
+	"relay/internal/llm"
+	"relay/internal/queue"
+	"relay/internal/recipient"
+	"relay/internal/variables"
+	"relay/internal/webhook"
+	"relay/pkg/models"
 )
 
 type QueueProcessor struct {
@@ -26,11 +27,14 @@ type QueueProcessor struct {
 	personalizer     *llm.Personalizer
 	variableReplacer *variables.VariableReplacer
 	rateLimiter      *queue.WorkspaceAwareRateLimiter
+	recipientService *recipient.Service
 
 	mu         sync.Mutex
 	processing bool
 	lastRun    time.Time
 	stats      ProcessStats
+	ctx        context.Context
+	cancel     context.CancelFunc
 }
 
 type ProcessStats struct {
@@ -47,6 +51,7 @@ func NewQueueProcessor(
 	gc *gmail.Client,
 	wc *webhook.Client,
 	p *llm.Personalizer,
+	rs *recipient.Service,
 ) *QueueProcessor {
 	// Create workspace map for rate limiter
 	workspaces := make(map[string]*config.WorkspaceConfig)
@@ -71,6 +76,8 @@ func NewQueueProcessor(
 		log.Printf("Variable replacer disabled - blaster API not configured")
 	}
 
+	ctx, cancel := context.WithCancel(context.Background())
+	
 	processor := &QueueProcessor{
 		queue:            q,
 		config:           cfg,
@@ -79,6 +86,9 @@ func NewQueueProcessor(
 		personalizer:     p,
 		variableReplacer: variableReplacer,
 		rateLimiter:      queue.NewWorkspaceAwareRateLimiter(workspaces, cfg.Queue.DailyRateLimit),
+		recipientService: rs,
+		ctx:              ctx,
+		cancel:           cancel,
 	}
 
 	// Initialize rate limiter with historical data from the queue
@@ -100,7 +110,17 @@ func (p *QueueProcessor) Start() {
 		select {
 		case <-ticker.C:
 			p.Process()
+		case <-p.ctx.Done():
+			log.Println("Queue processor stopping...")
+			return
 		}
+	}
+}
+
+// Stop gracefully stops the queue processor
+func (p *QueueProcessor) Stop() {
+	if p.cancel != nil {
+		p.cancel()
 	}
 }
 
@@ -135,6 +155,14 @@ func (p *QueueProcessor) Process() error {
 
 	for _, msg := range messages {
 		stats.TotalProcessed++
+
+		// Process recipient information for this message (defensive programming - continue on error)
+		if p.recipientService != nil {
+			if err := p.recipientService.ProcessMessageRecipients(msg); err != nil {
+				log.Printf("Warning: Failed to process recipients for message %s: %v", msg.ID, err)
+				// Continue processing the message even if recipient tracking fails
+			}
+		}
 
 		// Check rate limit for this sender (workspace-aware)
 		if !p.rateLimiter.Allow(msg.WorkspaceID, msg.From) {
@@ -198,6 +226,17 @@ func (p *QueueProcessor) processMessage(msg *models.Message) error {
 		}
 	}
 
+	// Validate that all variables have been resolved
+	if err := variables.ValidateNoUnresolvedVariables(msg); err != nil {
+		log.Printf("Error: Message %s contains unresolved variables: %v", msg.ID, err)
+		p.queue.UpdateStatus(msg.ID, models.StatusFailed, err)
+
+		if p.webhookClient != nil {
+			p.webhookClient.SendRejectEvent(ctx, msg, fmt.Sprintf("Unresolved variables: %v", err))
+		}
+		return fmt.Errorf("message contains unresolved variables: %w", err)
+	}
+
 	// Apply LLM personalization if enabled
 	if p.personalizer != nil && p.personalizer.IsEnabled() {
 		err := p.personalizer.PersonalizeMessage(ctx, msg)
@@ -214,12 +253,24 @@ func (p *QueueProcessor) processMessage(msg *models.Message) error {
 			log.Printf("Authentication error for message %s: %v", msg.ID, err)
 			p.queue.UpdateStatus(msg.ID, models.StatusAuthError, err)
 
+			// Update recipient delivery status
+			p.updateRecipientDeliveryStatus(msg, models.DeliveryStatusDeferred, err.Error())
+
 			if p.webhookClient != nil {
 				p.webhookClient.SendDeferredEvent(ctx, msg, "Authentication error")
 			}
 		} else {
 			log.Printf("Error sending message %s: %v", msg.ID, err)
 			p.queue.UpdateStatus(msg.ID, models.StatusFailed, err)
+
+			// Update recipient delivery status - determine if bounce or general failure
+			deliveryStatus := models.DeliveryStatusFailed
+			if strings.Contains(strings.ToLower(err.Error()), "bounce") ||
+				strings.Contains(strings.ToLower(err.Error()), "invalid") ||
+				strings.Contains(strings.ToLower(err.Error()), "not exist") {
+				deliveryStatus = models.DeliveryStatusBounced
+			}
+			p.updateRecipientDeliveryStatus(msg, deliveryStatus, err.Error())
 
 			if p.webhookClient != nil {
 				p.webhookClient.SendBounceEvent(ctx, msg, err.Error())
@@ -233,6 +284,9 @@ func (p *QueueProcessor) processMessage(msg *models.Message) error {
 	if err != nil {
 		log.Printf("Error updating message status: %v", err)
 	}
+
+	// Update recipient delivery status to SENT
+	p.updateRecipientDeliveryStatus(msg, models.DeliveryStatusSent, "")
 
 	// Record successful send for rate limiting
 	p.rateLimiter.RecordSend(msg.WorkspaceID, msg.From)
@@ -248,7 +302,34 @@ func (p *QueueProcessor) processMessage(msg *models.Message) error {
 	return nil
 }
 
-func (p *QueueProcessor) GetStatus() (bool, time.Time, ProcessStats) {
+// updateRecipientDeliveryStatus updates the delivery status for all recipients of a message
+func (p *QueueProcessor) updateRecipientDeliveryStatus(msg *models.Message, status models.DeliveryStatus, errorReason string) {
+	if p.recipientService == nil {
+		return // Recipient service not available
+	}
+
+	// Prepare bounce reason if this is an error
+	var bounceReason *string
+	if errorReason != "" {
+		bounceReason = &errorReason
+	}
+
+	// Update all recipient types (TO, CC, BCC)
+	allRecipients := append(append(msg.To, msg.CC...), msg.BCC...)
+
+	for _, email := range allRecipients {
+		if email == "" {
+			continue
+		}
+
+		email = strings.TrimSpace(strings.ToLower(email))
+		if err := p.recipientService.UpdateDeliveryStatus(msg.ID, email, status, bounceReason); err != nil {
+			log.Printf("Warning: Failed to update delivery status for recipient %s: %v", email, err)
+		}
+	}
+}
+
+func (p *QueueProcessor) GetStatus() (bool, time.Time, any) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 

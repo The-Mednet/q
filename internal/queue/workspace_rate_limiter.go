@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"smtp_relay/internal/config"
+	"relay/internal/config"
 )
 
 // WorkspaceAwareRateLimiter manages rate limits across multiple workspaces
@@ -135,7 +135,7 @@ func (warl *WorkspaceAwareRateLimiter) InitializeFromQueue(queue Queue) error {
 	if queue == nil {
 		return fmt.Errorf("queue is nil")
 	}
-	
+
 	counts, err := queue.GetSentCountsByWorkspaceAndSender()
 	if err != nil {
 		return fmt.Errorf("failed to get counts: %v", err)
@@ -145,10 +145,10 @@ func (warl *WorkspaceAwareRateLimiter) InitializeFromQueue(queue Queue) error {
 
 	totalInitialized := 0
 	log.Printf("Processing %d workspace groups from database", len(counts))
-	
+
 	for workspaceID, senderCounts := range counts {
 		log.Printf("Processing workspace '%s' with %d senders", workspaceID, len(senderCounts))
-		
+
 		// Handle empty workspace_id by mapping from email domain
 		if workspaceID == "" {
 			log.Printf("Empty workspace_id found, mapping by email domain")
@@ -164,12 +164,12 @@ func (warl *WorkspaceAwareRateLimiter) InitializeFromQueue(queue Queue) error {
 			}
 			continue
 		}
-		
+
 		// Check if workspace exists (with lock protection)
 		warl.mu.RLock()
 		_, exists := warl.workspaceConfigs[workspaceID]
 		warl.mu.RUnlock()
-		
+
 		if !exists {
 			log.Printf("Warning: Workspace %s not found in configs, available: %+v", workspaceID, warl.getAvailableWorkspaceIds())
 			continue // Skip unknown workspaces
@@ -192,7 +192,7 @@ func (warl *WorkspaceAwareRateLimiter) InitializeFromQueue(queue Queue) error {
 func (warl *WorkspaceAwareRateLimiter) getAvailableWorkspaceIds() []string {
 	warl.mu.RLock()
 	defer warl.mu.RUnlock()
-	
+
 	ids := make([]string, 0, len(warl.workspaceConfigs))
 	for id := range warl.workspaceConfigs {
 		ids = append(ids, id)
@@ -207,10 +207,10 @@ func (warl *WorkspaceAwareRateLimiter) MapEmailToWorkspace(email string) string 
 		return ""
 	}
 	domain := parts[1]
-	
+
 	warl.mu.RLock()
 	defer warl.mu.RUnlock()
-	
+
 	// Find workspace by domain
 	for workspaceID, workspace := range warl.workspaceConfigs {
 		if workspace.Domain == domain {
@@ -227,39 +227,39 @@ func (warl *WorkspaceAwareRateLimiter) initializeSenderCount(workspaceID, sender
 			log.Printf("ERROR: Panic during rate limiter initialization for %s:%s - %v", workspaceID, senderEmail, r)
 		}
 	}()
-	
+
 	// Get workspace config with lock protection
 	warl.mu.RLock()
 	workspace, exists := warl.workspaceConfigs[workspaceID]
 	warl.mu.RUnlock()
-	
+
 	if !exists {
 		log.Printf("Warning: Cannot initialize rate limiter - workspace %s not found", workspaceID)
 		return
 	}
-	
+
 	if workspace == nil {
 		log.Printf("Error: Workspace config for %s is nil", workspaceID)
 		return
 	}
-	
+
 	log.Printf("STEP 1: Getting user limit for %s", senderEmail)
 	// Safety check: Cap initialization to prevent memory issues
 	// Limit to 2x the daily limit to handle edge cases
 	userLimit := warl.getUserLimit(workspace, senderEmail)
 	log.Printf("STEP 1 COMPLETE: User limit is %d", userLimit)
-	
+
 	if userLimit <= 0 {
 		log.Printf("Warning: User limit for %s in workspace %s is %d, using default", senderEmail, workspaceID, userLimit)
 		userLimit = warl.globalDefault
 	}
-	
+
 	maxInitCount := userLimit * 2
 	if count > maxInitCount {
 		log.Printf("Warning: Capping initialization count from %d to %d for %s in workspace %s", count, maxInitCount, senderEmail, workspaceID)
 		count = maxInitCount
 	}
-	
+
 	log.Printf("STEP 2: Checking workspace-level limiter (WorkspaceDaily=%d)", workspace.RateLimits.WorkspaceDaily)
 	// Initialize workspace-level limiter if configured
 	if workspace.RateLimits.WorkspaceDaily > 0 {
@@ -268,20 +268,20 @@ func (warl *WorkspaceAwareRateLimiter) initializeSenderCount(workspaceID, sender
 		log.Printf("STEP 2b: Got workspace limiter, recording...")
 		// Cap workspace count to workspace limit * 2
 		wsCount := count
-		if wsCount > workspace.RateLimits.WorkspaceDaily * 2 {
+		if wsCount > workspace.RateLimits.WorkspaceDaily*2 {
 			wsCount = workspace.RateLimits.WorkspaceDaily * 2
 		}
 		workspaceLimiter.Record(wsCount)
 		log.Printf("STEP 2c: Workspace limiter record complete")
 	}
-	
+
 	log.Printf("STEP 3: Getting user-level limiter...")
 	// Initialize user-level limiter
 	limiter := warl.getLimiterForSender(workspaceID, senderEmail, userLimit)
 	log.Printf("STEP 4: Recording %d messages for user limiter...", count)
 	limiter.Record(count)
 	log.Printf("STEP 4 COMPLETE: User limiter record complete")
-	
+
 	log.Printf("Successfully initialized rate limiter for %s:%s with %d messages", workspaceID, senderEmail, count)
 }
 

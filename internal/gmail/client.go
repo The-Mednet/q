@@ -8,8 +8,8 @@ import (
 	"strings"
 	"sync"
 
-	"smtp_relay/internal/config"
-	"smtp_relay/pkg/models"
+	"relay/internal/config"
+	"relay/pkg/models"
 
 	"golang.org/x/oauth2/google"
 	"google.golang.org/api/gmail/v1"
@@ -87,10 +87,15 @@ func (c *Client) getServiceForWorkspaceAndSender(ctx context.Context, workspace 
 	}
 	c.serviceCacheMu.RUnlock()
 
+	// Check if workspace has Gmail configuration
+	if workspace.Gmail == nil || !workspace.Gmail.Enabled {
+		return nil, fmt.Errorf("Gmail not configured or disabled for workspace %s", workspace.ID)
+	}
+
 	// Read service account file for this workspace
-	serviceAccountData, err := os.ReadFile(workspace.ServiceAccountFile)
+	serviceAccountData, err := os.ReadFile(workspace.Gmail.ServiceAccountFile)
 	if err != nil {
-		return nil, fmt.Errorf("unable to read service account file %s: %v", workspace.ServiceAccountFile, err)
+		return nil, fmt.Errorf("unable to read service account file %s: %v", workspace.Gmail.ServiceAccountFile, err)
 	}
 
 	// Create JWT config for domain-wide delegation
@@ -125,7 +130,7 @@ func (c *Client) createGmailMessage(msg *models.Message) *gmail.Message {
 	// Format From header with display name if available
 	fromHeader := c.formatFromHeader(msg)
 	message.WriteString(fmt.Sprintf("From: %s\r\n", fromHeader))
-	
+
 	// Format To header with display names if available
 	toHeader := c.formatRecipientHeader(msg.To, "To")
 	message.WriteString(fmt.Sprintf("To: %s\r\n", toHeader))
@@ -170,12 +175,12 @@ func (c *Client) formatFromHeader(msg *models.Message) string {
 	if fromHeader, exists := msg.Headers["From"]; exists {
 		return fromHeader
 	}
-	
+
 	// Check for X-Sender-Name header (common in email services)
 	if senderName, exists := msg.Headers["X-Sender-Name"]; exists {
 		return fmt.Sprintf("%s <%s>", senderName, msg.From)
 	}
-	
+
 	// Extract domain from email and create a display name
 	parts := strings.Split(msg.From, "@")
 	if len(parts) == 2 {
@@ -187,7 +192,7 @@ func (c *Client) formatFromHeader(msg *models.Message) string {
 			return fmt.Sprintf("%s <%s>", displayName, msg.From)
 		}
 	}
-	
+
 	// Fallback to just the email address
 	return msg.From
 }
@@ -197,12 +202,12 @@ func (c *Client) formatRecipientHeader(addresses []string, headerType string) st
 	if len(addresses) == 0 {
 		return ""
 	}
-	
+
 	formatted := make([]string, len(addresses))
 	for i, address := range addresses {
 		formatted[i] = c.formatSingleRecipient(address, headerType)
 	}
-	
+
 	return strings.Join(formatted, ", ")
 }
 
@@ -212,7 +217,7 @@ func (c *Client) formatSingleRecipient(address, headerType string) string {
 	if strings.Contains(address, "<") && strings.Contains(address, ">") {
 		return address
 	}
-	
+
 	// Extract local part and create a display name based on email
 	parts := strings.Split(address, "@")
 	if len(parts) == 2 {
@@ -223,7 +228,7 @@ func (c *Client) formatSingleRecipient(address, headerType string) string {
 			return fmt.Sprintf("%s <%s>", displayName, address)
 		}
 	}
-	
+
 	// Fallback to just the email address
 	return address
 }

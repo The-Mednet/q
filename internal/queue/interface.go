@@ -1,7 +1,7 @@
 package queue
 
 import (
-	"smtp_relay/pkg/models"
+	"relay/pkg/models"
 )
 
 type Queue interface {
