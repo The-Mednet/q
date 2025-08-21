@@ -1,0 +1,492 @@
+---
+# MySQL High Availability Cluster for SMTP Relay Service
+# Using MySQL InnoDB Cluster with Group Replication for medical-grade reliability
+
+# MySQL Primary-Secondary Setup with Read Replicas
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mysql-config
+  namespace: mednet-email
+data:
+  primary.cnf: |
+    [mysqld]
+    # Basic settings
+    server-id = 1
+    log-bin = mysql-bin
+    binlog-format = ROW
+    gtid-mode = ON
+    enforce-gtid-consistency = ON
+    
+    # Performance settings for high-volume email processing
+    innodb_buffer_pool_size = 2G
+    innodb_log_file_size = 256M
+    innodb_flush_log_at_trx_commit = 1  # Durability for medical data
+    innodb_flush_method = O_DIRECT
+    
+    # Connection settings for high concurrency
+    max_connections = 500
+    max_user_connections = 450
+    thread_cache_size = 50
+    table_open_cache = 4000
+    
+    # Query cache settings
+    query_cache_type = 1
+    query_cache_size = 256M
+    query_cache_limit = 2M
+    
+    # Group Replication settings
+    loose-group_replication_group_name = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+    loose-group_replication_start_on_boot = OFF
+    loose-group_replication_local_address = "mysql-0.mysql-headless:33061"
+    loose-group_replication_group_seeds = "mysql-0.mysql-headless:33061,mysql-1.mysql-headless:33061,mysql-2.mysql-headless:33061"
+    loose-group_replication_bootstrap_group = OFF
+    loose-group_replication_single_primary_mode = ON
+    loose-group_replication_enforce_update_everywhere_checks = OFF
+    
+    # Replication settings for read replicas
+    read_only = OFF
+    super_read_only = OFF
+    
+    # Security settings
+    ssl-ca = /etc/mysql/ssl/ca.pem
+    ssl-cert = /etc/mysql/ssl/server-cert.pem
+    ssl-key = /etc/mysql/ssl/server-key.pem
+    
+    # Monitoring
+    general_log = OFF
+    slow_query_log = ON
+    slow_query_log_file = /var/log/mysql/slow.log
+    long_query_time = 2
+    
+  secondary.cnf: |
+    [mysqld]
+    # Basic settings - these will be dynamic based on pod ordinal
+    server-id = 2  # Will be overridden in init container
+    log-bin = mysql-bin
+    binlog-format = ROW
+    gtid-mode = ON
+    enforce-gtid-consistency = ON
+    
+    # Performance settings (same as primary)
+    innodb_buffer_pool_size = 2G
+    innodb_log_file_size = 256M
+    innodb_flush_log_at_trx_commit = 1
+    innodb_flush_method = O_DIRECT
+    
+    # Connection settings
+    max_connections = 500
+    max_user_connections = 450
+    thread_cache_size = 50
+    table_open_cache = 4000
+    
+    # Query cache settings
+    query_cache_type = 1
+    query_cache_size = 256M
+    query_cache_limit = 2M
+    
+    # Group Replication settings
+    loose-group_replication_group_name = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+    loose-group_replication_start_on_boot = OFF
+    loose-group_replication_local_address = "mysql-1.mysql-headless:33061"  # Will be dynamic
+    loose-group_replication_group_seeds = "mysql-0.mysql-headless:33061,mysql-1.mysql-headless:33061,mysql-2.mysql-headless:33061"
+    loose-group_replication_bootstrap_group = OFF
+    loose-group_replication_single_primary_mode = ON
+    loose-group_replication_enforce_update_everywhere_checks = OFF
+    
+    # Read-only settings for secondaries
+    read_only = ON
+    super_read_only = ON
+    
+    # Security settings
+    ssl-ca = /etc/mysql/ssl/ca.pem
+    ssl-cert = /etc/mysql/ssl/server-cert.pem
+    ssl-key = /etc/mysql/ssl/server-key.pem
+    
+    # Monitoring
+    general_log = OFF
+    slow_query_log = ON
+    slow_query_log_file = /var/log/mysql/slow.log
+    long_query_time = 2
+
+---
+# MySQL StatefulSet for High Availability
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: mysql
+  namespace: mednet-email
+  labels:
+    app: mysql
+    component: database
+spec:
+  serviceName: mysql-headless
+  replicas: 3  # Primary + 2 secondaries for HA
+  selector:
+    matchLabels:
+      app: mysql
+  template:
+    metadata:
+      labels:
+        app: mysql
+        component: database
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9104"
+    spec:
+      # Security context
+      securityContext:
+        fsGroup: 999
+        runAsUser: 999
+        runAsGroup: 999
+      
+      # Anti-affinity for database HA
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+          - labelSelector:
+              matchLabels:
+                app: mysql
+            topologyKey: kubernetes.io/hostname
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchLabels:
+                  app: mysql
+              topologyKey: topology.kubernetes.io/zone
+      
+      # Node selector for database nodes
+      nodeSelector:
+        node-type: database
+        storage-type: ssd
+      
+      # Tolerations for dedicated database nodes
+      tolerations:
+      - key: "mednet.com/database"
+        operator: "Equal"
+        value: "true"
+        effect: "NoSchedule"
+      
+      initContainers:
+      # Initialize MySQL configuration based on pod ordinal
+      - name: init-mysql
+        image: mysql:8.0
+        command:
+        - bash
+        - "-c"
+        - |
+          set -ex
+          # Generate server-id based on pod ordinal
+          [[ $(hostname) =~ -([0-9]+)$ ]] || exit 1
+          ordinal=${BASH_REMATCH[1]}
+          echo "[mysqld]" > /mnt/conf.d/server-id.cnf
+          echo "server-id=$((100 + $ordinal))" >> /mnt/conf.d/server-id.cnf
+          
+          # Copy appropriate config
+          if [[ $ordinal -eq 0 ]]; then
+            cp /mnt/config-map/primary.cnf /mnt/conf.d/
+          else
+            cp /mnt/config-map/secondary.cnf /mnt/conf.d/
+            # Update local address for group replication
+            sed -i "s/mysql-1.mysql-headless/mysql-$ordinal.mysql-headless/g" /mnt/conf.d/secondary.cnf
+          fi
+        volumeMounts:
+        - name: conf
+          mountPath: /mnt/conf.d
+        - name: config-map
+          mountPath: /mnt/config-map
+      
+      # Clone data from previous pod for scaling
+      - name: clone-mysql
+        image: gcr.io/google-samples/xtrabackup:1.0
+        command:
+        - bash
+        - "-c"
+        - |
+          set -ex
+          [[ $(hostname) =~ -([0-9]+)$ ]] || exit 1
+          ordinal=${BASH_REMATCH[1]}
+          [[ $ordinal -eq 0 ]] && exit 0
+          
+          # Clone data from previous peer
+          ncat --recv-only mysql-$(($ordinal-1)).mysql-headless 3307 | xbstream -x -C /var/lib/mysql
+          xtrabackup --prepare --target-dir=/var/lib/mysql
+        volumeMounts:
+        - name: data
+          mountPath: /var/lib/mysql
+          subPath: mysql
+        - name: conf
+          mountPath: /etc/mysql/conf.d
+      
+      containers:
+      # Main MySQL container
+      - name: mysql
+        image: mysql:8.0
+        env:
+        - name: MYSQL_ROOT_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: mysql-secret
+              key: root-password
+        - name: MYSQL_DATABASE
+          value: "relay"
+        - name: MYSQL_USER
+          valueFrom:
+            secretKeyRef:
+              name: mysql-secret
+              key: username
+        - name: MYSQL_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: mysql-secret
+              key: password
+        
+        # Resource allocation for database performance
+        resources:
+          requests:
+            cpu: "1"
+            memory: "4Gi"
+          limits:
+            cpu: "4"
+            memory: "8Gi"
+        
+        ports:
+        - name: mysql
+          containerPort: 3306
+        - name: group-repl
+          containerPort: 33061
+        
+        # Health checks for MySQL
+        livenessProbe:
+          exec:
+            command:
+            - mysqladmin
+            - ping
+            - -h
+            - localhost
+            - -u
+            - root
+            - -p$MYSQL_ROOT_PASSWORD
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        
+        readinessProbe:
+          exec:
+            command:
+            - mysql
+            - -h
+            - localhost
+            - -u
+            - root
+            - -p$MYSQL_ROOT_PASSWORD
+            - -e
+            - "SELECT 1"
+          initialDelaySeconds: 5
+          periodSeconds: 2
+          timeoutSeconds: 1
+          failureThreshold: 3
+        
+        volumeMounts:
+        - name: data
+          mountPath: /var/lib/mysql
+          subPath: mysql
+        - name: conf
+          mountPath: /etc/mysql/conf.d
+        - name: mysql-ssl
+          mountPath: /etc/mysql/ssl
+          readOnly: true
+        - name: initdb
+          mountPath: /docker-entrypoint-initdb.d
+          readOnly: true
+      
+      # MySQL Exporter for Prometheus monitoring
+      - name: mysql-exporter
+        image: prom/mysqld-exporter:v0.15.1
+        env:
+        - name: DATA_SOURCE_NAME
+          valueFrom:
+            secretKeyRef:
+              name: mysql-secret
+              key: exporter-dsn
+        ports:
+        - name: metrics
+          containerPort: 9104
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "128Mi"
+          limits:
+            cpu: "250m"
+            memory: "256Mi"
+        
+        livenessProbe:
+          httpGet:
+            path: /metrics
+            port: 9104
+          initialDelaySeconds: 15
+          periodSeconds: 20
+        
+        readinessProbe:
+          httpGet:
+            path: /metrics
+            port: 9104
+          initialDelaySeconds: 5
+          periodSeconds: 10
+      
+      # XtraBackup sidecar for data cloning
+      - name: xtrabackup
+        image: gcr.io/google-samples/xtrabackup:1.0
+        ports:
+        - name: xtrabackup
+          containerPort: 3307
+        command:
+        - bash
+        - "-c"
+        - |
+          set -ex
+          cd /var/lib/mysql
+          
+          if [[ -f xtrabackup_slave_info && "x$(<xtrabackup_slave_info)" != "x" ]]; then
+            cat xtrabackup_slave_info | sed -E 's/;$//g' > change_master_to.sql.in
+            rm -f xtrabackup_slave_info xtrabackup_binlog_info
+          elif [[ -f xtrabackup_binlog_info ]]; then
+            [[ $(cat xtrabackup_binlog_info) =~ ^(.*?)[[:space:]]+(.*?)$ ]] || exit 1
+            rm -f xtrabackup_binlog_info xtrabackup_slave_info
+            echo "CHANGE MASTER TO MASTER_LOG_FILE='${BASH_REMATCH[1]}',\
+                  MASTER_LOG_POS=${BASH_REMATCH[2]}" > change_master_to.sql.in
+          fi
+          
+          if [[ -f change_master_to.sql.in ]]; then
+            echo "Waiting for mysqld to be ready (accepting connections)"
+            until mysql -h 127.0.0.1 -u root -p$MYSQL_ROOT_PASSWORD -e "SELECT 1"; do sleep 1; done
+            
+            echo "Initializing replication from clone position"
+            mysql -h 127.0.0.1 -u root -p$MYSQL_ROOT_PASSWORD \
+                  -e "$(<change_master_to.sql.in), \
+                      MASTER_HOST='mysql-0.mysql-headless', \
+                      MASTER_USER='root', \
+                      MASTER_PASSWORD='$MYSQL_ROOT_PASSWORD', \
+                      MASTER_CONNECT_RETRY=10; \
+                    START SLAVE;" || exit 1
+            mv change_master_to.sql.in change_master_to.sql.orig
+          fi
+          
+          exec ncat --listen --keep-open --send-only --max-conns=1 3307 -c \
+            "xtrabackup --backup --slave-info --stream=xbstream --host=127.0.0.1 --user=root --password=$MYSQL_ROOT_PASSWORD"
+        volumeMounts:
+        - name: data
+          mountPath: /var/lib/mysql
+          subPath: mysql
+        - name: conf
+          mountPath: /etc/mysql/conf.d
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "100Mi"
+          limits:
+            cpu: "250m"
+            memory: "256Mi"
+      
+      volumes:
+      - name: conf
+        emptyDir: {}
+      - name: config-map
+        configMap:
+          name: mysql-config
+      - name: mysql-ssl
+        secret:
+          secretName: mysql-ssl-certs
+          defaultMode: 0600
+      - name: initdb
+        configMap:
+          name: mysql-initdb
+  
+  # Persistent volume claim template
+  volumeClaimTemplates:
+  - metadata:
+      name: data
+    spec:
+      accessModes: ["ReadWriteOnce"]
+      storageClassName: "gp3-ssd"  # AWS EBS gp3 for better IOPS
+      resources:
+        requests:
+          storage: 100Gi
+
+---
+# MySQL Headless Service for StatefulSet
+apiVersion: v1
+kind: Service
+metadata:
+  name: mysql-headless
+  namespace: mednet-email
+  labels:
+    app: mysql
+spec:
+  ports:
+  - name: mysql
+    port: 3306
+  - name: group-repl
+    port: 33061
+  - name: xtrabackup
+    port: 3307
+  clusterIP: None
+  selector:
+    app: mysql
+
+---
+# MySQL Service for Application Access (Primary)
+apiVersion: v1
+kind: Service
+metadata:
+  name: mysql-service
+  namespace: mednet-email
+  labels:
+    app: mysql
+    component: primary
+spec:
+  ports:
+  - name: mysql
+    port: 3306
+    targetPort: 3306
+  selector:
+    app: mysql
+    # This will be managed by a controller that identifies the primary
+
+---
+# MySQL Read-Only Service for Read Replicas
+apiVersion: v1
+kind: Service
+metadata:
+  name: mysql-readonly
+  namespace: mednet-email
+  labels:
+    app: mysql
+    component: readonly
+spec:
+  ports:
+  - name: mysql
+    port: 3306
+    targetPort: 3306
+  selector:
+    app: mysql
+    # This will be managed to point to read-only replicas
+
+---
+# StorageClass for MySQL with optimized settings
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: gp3-ssd
+provisioner: ebs.csi.aws.com
+parameters:
+  type: gp3
+  iops: "3000"      # Higher IOPS for database workloads
+  throughput: "125"  # MB/s
+  fsType: ext4
+  encrypted: "true"  # Required for medical data
+volumeBindingMode: WaitForFirstConsumer
+allowVolumeExpansion: true
+reclaimPolicy: Retain  # Protect data in production

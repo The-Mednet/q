@@ -1,0 +1,446 @@
+# Default values for smtp-relay Helm chart
+# Medical-grade email infrastructure configuration
+
+global:
+  # Image registry and pull settings
+  imageRegistry: ""
+  imagePullSecrets: []
+  
+  # Storage class for all persistent volumes
+  storageClass: "gp3-ssd"
+  
+  # Security context applied to all pods
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 65532
+    runAsGroup: 65532
+    fsGroup: 65532
+
+# SMTP Relay Service Configuration
+smtpRelay:
+  # Image configuration
+  image:
+    registry: docker.io
+    repository: mednet/smtp-relay
+    tag: "1.0.0"
+    pullPolicy: IfNotPresent
+  
+  # Replica configuration
+  replicaCount: 3
+  
+  # Resource requests and limits
+  resources:
+    requests:
+      memory: "512Mi"
+      cpu: "500m"
+      ephemeral-storage: "1Gi"
+    limits:
+      memory: "2Gi"
+      cpu: "2"
+      ephemeral-storage: "5Gi"
+  
+  # Service configuration
+  service:
+    type: LoadBalancer
+    smtp:
+      port: 2525
+      targetPort: 2525
+    webui:
+      port: 8080
+      targetPort: 8080
+    metrics:
+      port: 9090
+      targetPort: 9090
+    annotations:
+      service.beta.kubernetes.io/aws-load-balancer-type: "nlb"
+      service.beta.kubernetes.io/aws-load-balancer-scheme: "internal"
+  
+  # Configuration for SMTP server
+  smtp:
+    host: "0.0.0.0"
+    port: 2525
+    maxSize: "25165824"  # 24MB
+    readTimeout: "30s"
+    writeTimeout: "30s"
+  
+  # Queue configuration
+  queue:
+    processInterval: "10s"
+    batchSize: 50
+    maxRetries: 5
+    dailyRateLimit: 500000
+  
+  # Webhook configuration
+  webhook:
+    timeout: "15s"
+    maxRetries: 5
+  
+  # Health check configuration
+  healthcheck:
+    livenessProbe:
+      enabled: true
+      initialDelaySeconds: 30
+      periodSeconds: 30
+      timeoutSeconds: 10
+      failureThreshold: 3
+    readinessProbe:
+      enabled: true
+      initialDelaySeconds: 10
+      periodSeconds: 10
+      timeoutSeconds: 5
+      failureThreshold: 3
+    startupProbe:
+      enabled: true
+      initialDelaySeconds: 10
+      periodSeconds: 5
+      timeoutSeconds: 3
+      failureThreshold: 30
+  
+  # Pod disruption budget
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 2
+  
+  # Pod anti-affinity configuration
+  affinity:
+    podAntiAffinity:
+      preferredDuringSchedulingIgnoredDuringExecution:
+      - weight: 100
+        podAffinityTerm:
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: smtp-relay
+          topologyKey: kubernetes.io/hostname
+      - weight: 50
+        podAffinityTerm:
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: smtp-relay
+          topologyKey: topology.kubernetes.io/zone
+  
+  # Node selector
+  nodeSelector:
+    node-type: compute-optimized
+  
+  # Tolerations
+  tolerations:
+  - key: "mednet.com/email-processing"
+    operator: "Equal"
+    value: "true"
+    effect: "NoSchedule"
+  
+  # Environment variables
+  env:
+    LOG_LEVEL: "info"
+  
+  # Configuration files
+  config:
+    workspace:
+      enabled: true
+      file: "workspace.json"
+    gateway:
+      enabled: true
+      file: "gateway-config.json"
+
+# MySQL Configuration
+mysql:
+  enabled: true
+  
+  # Architecture: replication for HA
+  architecture: replication
+  
+  auth:
+    rootPassword: ""  # Will be generated if empty
+    username: "relay"
+    password: ""      # Will be generated if empty
+    database: "relay"
+  
+  primary:
+    resources:
+      requests:
+        memory: "4Gi"
+        cpu: "1"
+      limits:
+        memory: "8Gi"
+        cpu: "4"
+    
+    persistence:
+      enabled: true
+      storageClass: "gp3-ssd"
+      size: "100Gi"
+    
+    configuration: |-
+      [mysqld]
+      innodb_buffer_pool_size=2G
+      innodb_log_file_size=256M
+      innodb_flush_log_at_trx_commit=1
+      max_connections=500
+      slow_query_log=ON
+      long_query_time=2
+      query_cache_type=1
+      query_cache_size=256M
+  
+  secondary:
+    replicaCount: 2
+    resources:
+      requests:
+        memory: "2Gi"
+        cpu: "500m"
+      limits:
+        memory: "4Gi"
+        cpu: "2"
+    
+    persistence:
+      enabled: true
+      storageClass: "gp3-ssd"
+      size: "100Gi"
+  
+  metrics:
+    enabled: true
+    serviceMonitor:
+      enabled: true
+
+# Redis Configuration (for distributed rate limiting)
+redis:
+  enabled: true
+  
+  # Architecture: replication for HA
+  architecture: replication
+  
+  auth:
+    enabled: true
+    password: ""  # Will be generated if empty
+  
+  master:
+    resources:
+      requests:
+        memory: "1Gi"
+        cpu: "200m"
+      limits:
+        memory: "2Gi"
+        cpu: "1"
+    
+    persistence:
+      enabled: true
+      storageClass: "gp3-ssd"
+      size: "20Gi"
+  
+  replica:
+    replicaCount: 2
+    resources:
+      requests:
+        memory: "512Mi"
+        cpu: "100m"
+      limits:
+        memory: "1Gi"
+        cpu: "500m"
+    
+    persistence:
+      enabled: true
+      storageClass: "gp3-ssd"
+      size: "10Gi"
+  
+  metrics:
+    enabled: true
+    serviceMonitor:
+      enabled: true
+
+# Autoscaling Configuration
+autoscaling:
+  hpa:
+    enabled: true
+    minReplicas: 3
+    maxReplicas: 50
+    targetCPUUtilizationPercentage: 70
+    targetMemoryUtilizationPercentage: 80
+    
+    # Custom metrics (requires metrics server)
+    customMetrics:
+    - type: Pods
+      pods:
+        metric:
+          name: email_queue_depth
+        target:
+          type: AverageValue
+          averageValue: "50"
+  
+  vpa:
+    enabled: true
+    updateMode: "Off"  # Recommendation only
+  
+  # Cluster autoscaler configuration
+  clusterAutoscaler:
+    enabled: true
+
+# Monitoring Configuration
+monitoring:
+  # Prometheus monitoring
+  prometheus:
+    enabled: true
+    serviceMonitor:
+      enabled: true
+      interval: 30s
+      scrapeTimeout: 10s
+  
+  # Grafana dashboards
+  grafana:
+    enabled: true
+    dashboards:
+      enabled: true
+  
+  # Alert rules
+  alerting:
+    enabled: true
+    rules:
+      critical:
+        enabled: true
+      warning:
+        enabled: true
+      info:
+        enabled: true
+
+# Security Configuration
+security:
+  # Network policies
+  networkPolicies:
+    enabled: true
+    denyAll: true
+    
+  # Pod security policy
+  podSecurityPolicy:
+    enabled: false  # Use Pod Security Standards instead
+  
+  # Service mesh (Istio)
+  serviceMesh:
+    enabled: false
+    mtls:
+      mode: "STRICT"
+  
+  # RBAC
+  rbac:
+    create: true
+  
+  # Service account
+  serviceAccount:
+    create: true
+    annotations: {}
+    name: ""
+
+# Backup and Disaster Recovery
+backup:
+  # Velero backup
+  velero:
+    enabled: true
+    schedules:
+      daily:
+        enabled: true
+        schedule: "0 2 * * *"
+        ttl: "2555h"  # 7 years for medical compliance
+      weekly:
+        enabled: true
+        schedule: "0 1 * * 0"
+        ttl: "8760h"  # 1 year
+  
+  # Database backup
+  database:
+    enabled: true
+    schedule: "0 */6 * * *"  # Every 6 hours
+    retention: "30d"
+    s3:
+      bucket: "mednet-mysql-backups"
+      region: "us-east-1"
+      encryption: true
+  
+  # Configuration backup
+  config:
+    enabled: true
+    schedule: "0 3 * * *"
+    retention: "90d"
+
+# External Dependencies
+externalServices:
+  # Gmail API configuration
+  gmail:
+    workspaces: []
+    # Example workspace configuration:
+    # - id: "main"
+    #   domain: "mednet.com"
+    #   serviceAccountFile: "credentials/main-sa.json"
+    #   enabled: true
+  
+  # Mailgun configuration (alternative provider)
+  mailgun:
+    workspaces: []
+  
+  # Webhook endpoints
+  webhooks:
+    mandrill:
+      url: ""
+      timeout: "30s"
+      maxRetries: 3
+  
+  # LLM providers
+  llm:
+    enabled: false
+    provider: "openai"
+    model: "gpt-4-turbo"
+    timeout: "30s"
+
+# Development and Testing
+development:
+  # Debug mode
+  debug:
+    enabled: false
+    logLevel: "debug"
+  
+  # Load testing
+  loadTest:
+    enabled: false
+    concurrent: 100
+    duration: "5m"
+  
+  # Chaos engineering
+  chaosEngineering:
+    enabled: false
+
+# Compliance and Governance
+compliance:
+  # Medical compliance requirements
+  medical:
+    enabled: true
+    dataRetention: "7y"
+    encryption:
+      atRest: true
+      inTransit: true
+    audit:
+      enabled: true
+      retention: "7y"
+  
+  # HIPAA compliance
+  hipaa:
+    enabled: true
+    
+  # Data sovereignty
+  dataSovereignty:
+    region: "us-east-1"
+    localOnly: false
+
+# Performance Tuning
+performance:
+  # JVM tuning (if applicable)
+  jvm:
+    heap:
+      min: "512m"
+      max: "2g"
+  
+  # Connection pooling
+  database:
+    maxConnections: 25
+    maxIdleConnections: 10
+    connectionLifetime: "5m"
+  
+  # Caching
+  cache:
+    enabled: true
+    size: "256MB"
+    ttl: "1h"

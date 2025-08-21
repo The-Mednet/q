@@ -1,0 +1,383 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "smtp-relay.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "smtp-relay.labels" . | nindent 4 }}
+  {{- with .Values.smtpRelay.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  replicas: {{ .Values.smtpRelay.replicaCount }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0  # Zero downtime for medical service
+  selector:
+    matchLabels:
+      {{- include "smtp-relay.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "smtp-relay.selectorLabels" . | nindent 8 }}
+        version: {{ .Values.smtpRelay.image.tag | quote }}
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: {{ .Values.smtpRelay.service.metrics.port | quote }}
+        prometheus.io/path: "/metrics"
+        # Force pod restart on config changes
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
+    spec:
+      {{- with .Values.global.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      
+      serviceAccountName: {{ include "smtp-relay.serviceAccountName" . }}
+      
+      # Security context
+      securityContext:
+        {{- toYaml .Values.global.podSecurityContext | nindent 8 }}
+      
+      # Anti-affinity for high availability
+      {{- with .Values.smtpRelay.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      
+      # Topology spread for better distribution
+      topologySpreadConstraints:
+      - maxSkew: 1
+        topologyKey: topology.kubernetes.io/zone
+        whenUnsatisfiable: DoNotSchedule
+        labelSelector:
+          matchLabels:
+            {{- include "smtp-relay.selectorLabels" . | nindent 12 }}
+      
+      # Node selection
+      {{- with .Values.smtpRelay.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      
+      # Tolerations
+      {{- with .Values.smtpRelay.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      
+      # DNS configuration for faster resolution
+      dnsPolicy: ClusterFirst
+      dnsConfig:
+        options:
+        - name: ndots
+          value: "2"
+        - name: edns0
+      
+      # Init containers
+      initContainers:
+      {{- if .Values.mysql.enabled }}
+      # Wait for MySQL to be ready
+      - name: wait-for-mysql
+        image: busybox:1.36-uclibc
+        command:
+        - sh
+        - -c
+        - |
+          until nc -z {{ include "smtp-relay.mysql.fullname" . }} 3306; do
+            echo "Waiting for MySQL..."
+            sleep 2
+          done
+          echo "MySQL is ready"
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop:
+            - ALL
+      {{- end }}
+      
+      {{- if .Values.redis.enabled }}
+      # Wait for Redis to be ready
+      - name: wait-for-redis
+        image: busybox:1.36-uclibc
+        command:
+        - sh
+        - -c
+        - |
+          until nc -z {{ include "smtp-relay.redis.fullname" . }} 6379; do
+            echo "Waiting for Redis..."
+            sleep 2
+          done
+          echo "Redis is ready"
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop:
+            - ALL
+      {{- end }}
+      
+      # Database migration init container
+      - name: db-migration
+        image: migrate/migrate:v4.16.2
+        env:
+        - name: DB_URL
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "smtp-relay.secretName" . }}
+              key: mysql-url
+        command:
+        - migrate
+        - -path
+        - /migrations
+        - -database
+        - $(DB_URL)
+        - up
+        volumeMounts:
+        - name: migrations
+          mountPath: /migrations
+          readOnly: true
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop:
+            - ALL
+      
+      containers:
+      # Main SMTP relay container
+      - name: smtp-relay
+        image: "{{ .Values.smtpRelay.image.registry }}/{{ .Values.smtpRelay.image.repository }}:{{ .Values.smtpRelay.image.tag }}"
+        imagePullPolicy: {{ .Values.smtpRelay.image.pullPolicy }}
+        
+        # Resource management
+        resources:
+          {{- toYaml .Values.smtpRelay.resources | nindent 10 }}
+        
+        # Enhanced probes
+        {{- if .Values.smtpRelay.healthcheck.livenessProbe.enabled }}
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: http
+            scheme: HTTP
+          initialDelaySeconds: {{ .Values.smtpRelay.healthcheck.livenessProbe.initialDelaySeconds }}
+          periodSeconds: {{ .Values.smtpRelay.healthcheck.livenessProbe.periodSeconds }}
+          timeoutSeconds: {{ .Values.smtpRelay.healthcheck.livenessProbe.timeoutSeconds }}
+          failureThreshold: {{ .Values.smtpRelay.healthcheck.livenessProbe.failureThreshold }}
+          successThreshold: 1
+        {{- end }}
+        
+        {{- if .Values.smtpRelay.healthcheck.readinessProbe.enabled }}
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: http
+            scheme: HTTP
+          initialDelaySeconds: {{ .Values.smtpRelay.healthcheck.readinessProbe.initialDelaySeconds }}
+          periodSeconds: {{ .Values.smtpRelay.healthcheck.readinessProbe.periodSeconds }}
+          timeoutSeconds: {{ .Values.smtpRelay.healthcheck.readinessProbe.timeoutSeconds }}
+          failureThreshold: {{ .Values.smtpRelay.healthcheck.readinessProbe.failureThreshold }}
+          successThreshold: 1
+        {{- end }}
+        
+        {{- if .Values.smtpRelay.healthcheck.startupProbe.enabled }}
+        startupProbe:
+          httpGet:
+            path: /health
+            port: http
+            scheme: HTTP
+          initialDelaySeconds: {{ .Values.smtpRelay.healthcheck.startupProbe.initialDelaySeconds }}
+          periodSeconds: {{ .Values.smtpRelay.healthcheck.startupProbe.periodSeconds }}
+          timeoutSeconds: {{ .Values.smtpRelay.healthcheck.startupProbe.timeoutSeconds }}
+          failureThreshold: {{ .Values.smtpRelay.healthcheck.startupProbe.failureThreshold }}
+          successThreshold: 1
+        {{- end }}
+        
+        # Ports
+        ports:
+        - name: smtp
+          containerPort: {{ .Values.smtpRelay.service.smtp.targetPort }}
+          protocol: TCP
+        - name: http
+          containerPort: {{ .Values.smtpRelay.service.webui.targetPort }}
+          protocol: TCP
+        - name: metrics
+          containerPort: {{ .Values.smtpRelay.service.metrics.targetPort }}
+          protocol: TCP
+        
+        # Environment variables
+        env:
+        # Application configuration
+        - name: LOG_LEVEL
+          value: {{ .Values.smtpRelay.env.LOG_LEVEL | quote }}
+        - name: GOMAXPROCS
+          valueFrom:
+            resourceFieldRef:
+              resource: limits.cpu
+              divisor: 1
+        - name: GOMEMLIMIT
+          valueFrom:
+            resourceFieldRef:
+              resource: limits.memory
+              divisor: 1
+        
+        # SMTP configuration
+        - name: SMTP_HOST
+          value: {{ .Values.smtpRelay.smtp.host | quote }}
+        - name: SMTP_PORT
+          value: {{ .Values.smtpRelay.smtp.port | quote }}
+        - name: SMTP_MAX_SIZE
+          value: {{ .Values.smtpRelay.smtp.maxSize | quote }}
+        - name: SMTP_READ_TIMEOUT
+          value: {{ .Values.smtpRelay.smtp.readTimeout | quote }}
+        - name: SMTP_WRITE_TIMEOUT
+          value: {{ .Values.smtpRelay.smtp.writeTimeout | quote }}
+        
+        # Queue configuration
+        - name: QUEUE_PROCESS_INTERVAL
+          value: {{ .Values.smtpRelay.queue.processInterval | quote }}
+        - name: QUEUE_BATCH_SIZE
+          value: {{ .Values.smtpRelay.queue.batchSize | quote }}
+        - name: QUEUE_MAX_RETRIES
+          value: {{ .Values.smtpRelay.queue.maxRetries | quote }}
+        - name: QUEUE_DAILY_RATE_LIMIT
+          value: {{ .Values.smtpRelay.queue.dailyRateLimit | quote }}
+        
+        # Webhook configuration
+        - name: WEBHOOK_TIMEOUT
+          value: {{ .Values.smtpRelay.webhook.timeout | quote }}
+        - name: WEBHOOK_MAX_RETRIES
+          value: {{ .Values.smtpRelay.webhook.maxRetries | quote }}
+        
+        {{- if .Values.mysql.enabled }}
+        # MySQL configuration
+        - name: MYSQL_HOST
+          value: {{ include "smtp-relay.mysql.fullname" . }}
+        - name: MYSQL_PORT
+          value: "3306"
+        - name: MYSQL_DATABASE
+          value: {{ .Values.mysql.auth.database | quote }}
+        - name: MYSQL_USER
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "smtp-relay.secretName" . }}
+              key: mysql-username
+        - name: MYSQL_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "smtp-relay.secretName" . }}
+              key: mysql-password
+        {{- end }}
+        
+        {{- if .Values.redis.enabled }}
+        # Redis configuration
+        - name: REDIS_HOST
+          value: {{ include "smtp-relay.redis.fullname" . }}
+        - name: REDIS_PORT
+          value: "6379"
+        {{- if .Values.redis.auth.enabled }}
+        - name: REDIS_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "smtp-relay.secretName" . }}
+              key: redis-password
+        {{- end }}
+        {{- end }}
+        
+        # Monitoring configuration
+        {{- if .Values.monitoring.prometheus.enabled }}
+        - name: NEW_RELIC_LICENSE_KEY
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "smtp-relay.secretName" . }}
+              key: newrelic-license-key
+              optional: true
+        - name: NEW_RELIC_APP_NAME
+          value: "smtp-relay-{{ .Release.Namespace }}"
+        - name: NEW_RELIC_DISTRIBUTED_TRACING_ENABLED
+          value: "true"
+        {{- end }}
+        
+        # Configuration files
+        {{- if .Values.smtpRelay.config.workspace.enabled }}
+        - name: WORKSPACE_CONFIG_FILE
+          value: "/config/{{ .Values.smtpRelay.config.workspace.file }}"
+        {{- end }}
+        
+        {{- if .Values.smtpRelay.config.gateway.enabled }}
+        - name: GATEWAY_CONFIG_FILE
+          value: "/config/{{ .Values.smtpRelay.config.gateway.file }}"
+        {{- end }}
+        
+        # Volume mounts
+        volumeMounts:
+        - name: config
+          mountPath: /config
+          readOnly: true
+        {{- if .Values.externalServices.gmail.workspaces }}
+        - name: gmail-credentials
+          mountPath: /app/credentials
+          readOnly: true
+        {{- end }}
+        - name: tmp
+          mountPath: /tmp
+        - name: app-data
+          mountPath: /app/data
+        
+        # Security context
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop:
+            - ALL
+        
+        # Graceful shutdown handling
+        lifecycle:
+          preStop:
+            exec:
+              command:
+              - /bin/sh
+              - -c
+              - "sleep 15"  # Allow time for connections to drain
+      
+      # Termination grace period
+      terminationGracePeriodSeconds: 60
+      
+      # Volumes
+      volumes:
+      - name: config
+        configMap:
+          name: {{ include "smtp-relay.configMapName" . }}
+          defaultMode: 0644
+      
+      {{- if .Values.externalServices.gmail.workspaces }}
+      - name: gmail-credentials
+        secret:
+          secretName: {{ include "smtp-relay.secretName" . }}
+          defaultMode: 0600
+          items:
+          {{- range $index, $workspace := .Values.externalServices.gmail.workspaces }}
+          - key: gmail-sa-{{ $workspace.id }}
+            path: {{ $workspace.serviceAccountFile }}
+          {{- end }}
+      {{- end }}
+      
+      - name: migrations
+        configMap:
+          name: {{ include "smtp-relay.configMapName" . }}-migrations
+          defaultMode: 0644
+      
+      - name: tmp
+        emptyDir:
+          sizeLimit: 1Gi
+      
+      - name: app-data
+        emptyDir:
+          sizeLimit: 5Gi

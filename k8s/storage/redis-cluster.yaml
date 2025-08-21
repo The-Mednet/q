@@ -1,0 +1,422 @@
+---
+# Redis Cluster for Distributed Rate Limiting and Caching
+# High availability setup for SMTP relay service
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: redis-config
+  namespace: mednet-email
+data:
+  redis.conf: |
+    # Network and security
+    bind 0.0.0.0
+    port 6379
+    protected-mode yes
+    requirepass REDIS_PASSWORD_PLACEHOLDER
+    
+    # Persistence for reliability (medical data requirements)
+    save 900 1      # Save if at least 1 key changed in 900 seconds
+    save 300 10     # Save if at least 10 keys changed in 300 seconds
+    save 60 10000   # Save if at least 10000 keys changed in 60 seconds
+    
+    # AOF persistence for durability
+    appendonly yes
+    appendfsync everysec
+    auto-aof-rewrite-percentage 100
+    auto-aof-rewrite-min-size 64mb
+    
+    # Memory management
+    maxmemory 1gb
+    maxmemory-policy allkeys-lru
+    
+    # Cluster settings
+    cluster-enabled yes
+    cluster-config-file nodes.conf
+    cluster-node-timeout 15000
+    cluster-require-full-coverage no  # Allow partial availability
+    
+    # Performance tuning
+    tcp-keepalive 300
+    timeout 0
+    tcp-backlog 511
+    
+    # Logging
+    loglevel notice
+    logfile ""
+    
+    # Slow log for monitoring
+    slowlog-log-slower-than 10000
+    slowlog-max-len 128
+    
+    # Memory optimization
+    hash-max-ziplist-entries 512
+    hash-max-ziplist-value 64
+    list-max-ziplist-size -2
+    set-max-intset-entries 512
+    zset-max-ziplist-entries 128
+    zset-max-ziplist-value 64
+
+---
+# Redis StatefulSet for Cluster
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: redis
+  namespace: mednet-email
+  labels:
+    app: redis
+    component: cache
+spec:
+  serviceName: redis-headless
+  replicas: 6  # 3 masters + 3 replicas for HA
+  selector:
+    matchLabels:
+      app: redis
+  template:
+    metadata:
+      labels:
+        app: redis
+        component: cache
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9121"
+    spec:
+      # Security context
+      securityContext:
+        fsGroup: 999
+        runAsUser: 999
+        runAsGroup: 999
+      
+      # Anti-affinity for Redis HA
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchLabels:
+                  app: redis
+              topologyKey: kubernetes.io/hostname
+          - weight: 50
+            podAffinityTerm:
+              labelSelector:
+                matchLabels:
+                  app: redis
+              topologyKey: topology.kubernetes.io/zone
+      
+      # Node selector for cache nodes
+      nodeSelector:
+        node-type: memory-optimized
+      
+      initContainers:
+      # Initialize Redis configuration
+      - name: init-redis
+        image: redis:7.0-alpine
+        command:
+        - sh
+        - -c
+        - |
+          # Replace password placeholder
+          REDIS_PASSWORD=$(cat /etc/redis-secret/password)
+          sed "s/REDIS_PASSWORD_PLACEHOLDER/$REDIS_PASSWORD/g" /etc/redis-config/redis.conf > /etc/redis/redis.conf
+          chown redis:redis /etc/redis/redis.conf
+        volumeMounts:
+        - name: redis-config
+          mountPath: /etc/redis-config
+        - name: redis-conf
+          mountPath: /etc/redis
+        - name: redis-secret
+          mountPath: /etc/redis-secret
+        securityContext:
+          runAsUser: 0  # Need root to chown
+      
+      containers:
+      # Main Redis container
+      - name: redis
+        image: redis:7.0-alpine
+        command:
+        - redis-server
+        - /etc/redis/redis.conf
+        
+        ports:
+        - name: redis
+          containerPort: 6379
+        - name: cluster-bus
+          containerPort: 16379
+        
+        # Resource allocation for caching performance
+        resources:
+          requests:
+            cpu: "200m"
+            memory: "1Gi"
+          limits:
+            cpu: "1"
+            memory: "2Gi"
+        
+        # Health checks
+        livenessProbe:
+          exec:
+            command:
+            - redis-cli
+            - -a
+            - $(cat /etc/redis-secret/password)
+            - ping
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        
+        readinessProbe:
+          exec:
+            command:
+            - redis-cli
+            - -a
+            - $(cat /etc/redis-secret/password)
+            - ping
+          initialDelaySeconds: 5
+          periodSeconds: 5
+          timeoutSeconds: 1
+          failureThreshold: 3
+        
+        volumeMounts:
+        - name: redis-data
+          mountPath: /data
+        - name: redis-conf
+          mountPath: /etc/redis
+          readOnly: true
+        - name: redis-secret
+          mountPath: /etc/redis-secret
+          readOnly: true
+        
+        env:
+        - name: REDIS_PORT
+          value: "6379"
+      
+      # Redis Exporter for monitoring
+      - name: redis-exporter
+        image: oliver006/redis_exporter:v1.55.0
+        env:
+        - name: REDIS_ADDR
+          value: "redis://localhost:6379"
+        - name: REDIS_PASSWORD_FILE
+          value: "/etc/redis-secret/password"
+        ports:
+        - name: metrics
+          containerPort: 9121
+        resources:
+          requests:
+            cpu: "50m"
+            memory: "64Mi"
+          limits:
+            cpu: "100m"
+            memory: "128Mi"
+        volumeMounts:
+        - name: redis-secret
+          mountPath: /etc/redis-secret
+          readOnly: true
+        
+        livenessProbe:
+          httpGet:
+            path: /metrics
+            port: 9121
+          initialDelaySeconds: 15
+          periodSeconds: 30
+        
+        readinessProbe:
+          httpGet:
+            path: /metrics
+            port: 9121
+          initialDelaySeconds: 5
+          periodSeconds: 10
+      
+      volumes:
+      - name: redis-config
+        configMap:
+          name: redis-config
+      - name: redis-conf
+        emptyDir: {}
+      - name: redis-secret
+        secret:
+          secretName: redis-secret
+  
+  # Persistent volume claim template
+  volumeClaimTemplates:
+  - metadata:
+      name: redis-data
+    spec:
+      accessModes: ["ReadWriteOnce"]
+      storageClassName: "gp3-ssd"
+      resources:
+        requests:
+          storage: 20Gi
+
+---
+# Redis Headless Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis-headless
+  namespace: mednet-email
+  labels:
+    app: redis
+spec:
+  ports:
+  - name: redis
+    port: 6379
+  - name: cluster-bus
+    port: 16379
+  clusterIP: None
+  selector:
+    app: redis
+
+---
+# Redis Service for Applications
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis-service
+  namespace: mednet-email
+  labels:
+    app: redis
+    component: cache
+spec:
+  ports:
+  - name: redis
+    port: 6379
+    targetPort: 6379
+  selector:
+    app: redis
+  type: ClusterIP
+
+---
+# Redis Cluster Initialization Job
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: redis-cluster-init
+  namespace: mednet-email
+  labels:
+    app: redis
+    component: cluster-init
+spec:
+  template:
+    metadata:
+      labels:
+        app: redis-cluster-init
+    spec:
+      restartPolicy: OnFailure
+      containers:
+      - name: redis-cluster-init
+        image: redis:7.0-alpine
+        command:
+        - sh
+        - -c
+        - |
+          # Wait for all Redis pods to be ready
+          for i in $(seq 0 5); do
+            until redis-cli -h redis-$i.redis-headless -a $(cat /etc/redis-secret/password) ping; do
+              echo "Waiting for redis-$i..."
+              sleep 2
+            done
+          done
+          
+          # Create cluster
+          redis-cli -a $(cat /etc/redis-secret/password) --cluster create \
+            redis-0.redis-headless:6379 \
+            redis-1.redis-headless:6379 \
+            redis-2.redis-headless:6379 \
+            redis-3.redis-headless:6379 \
+            redis-4.redis-headless:6379 \
+            redis-5.redis-headless:6379 \
+            --cluster-replicas 1 \
+            --cluster-yes
+        volumeMounts:
+        - name: redis-secret
+          mountPath: /etc/redis-secret
+          readOnly: true
+      volumes:
+      - name: redis-secret
+        secret:
+          secretName: redis-secret
+
+---
+# Redis Sentinel for High Availability (Alternative to cluster)
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: redis-sentinel
+  namespace: mednet-email
+  labels:
+    app: redis-sentinel
+    component: ha
+spec:
+  serviceName: redis-sentinel-headless
+  replicas: 3
+  selector:
+    matchLabels:
+      app: redis-sentinel
+  template:
+    metadata:
+      labels:
+        app: redis-sentinel
+    spec:
+      containers:
+      - name: redis-sentinel
+        image: redis:7.0-alpine
+        command:
+        - redis-sentinel
+        - /etc/redis-sentinel/sentinel.conf
+        ports:
+        - name: sentinel
+          containerPort: 26379
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "128Mi"
+          limits:
+            cpu: "200m"
+            memory: "256Mi"
+        volumeMounts:
+        - name: sentinel-config
+          mountPath: /etc/redis-sentinel
+          readOnly: true
+      volumes:
+      - name: sentinel-config
+        configMap:
+          name: redis-sentinel-config
+
+---
+# Redis Sentinel Configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: redis-sentinel-config
+  namespace: mednet-email
+data:
+  sentinel.conf: |
+    port 26379
+    bind 0.0.0.0
+    sentinel monitor mymaster redis-0.redis-headless 6379 2
+    sentinel auth-pass mymaster REDIS_PASSWORD_PLACEHOLDER
+    sentinel down-after-milliseconds mymaster 5000
+    sentinel parallel-syncs mymaster 1
+    sentinel failover-timeout mymaster 10000
+    sentinel deny-scripts-reconfig yes
+
+---
+# Redis Sentinel Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis-sentinel-headless
+  namespace: mednet-email
+  labels:
+    app: redis-sentinel
+spec:
+  ports:
+  - name: sentinel
+    port: 26379
+  clusterIP: None
+  selector:
+    app: redis-sentinel

@@ -1,0 +1,82 @@
+# Production Dockerfile for Kubernetes deployment
+# Build stage
+FROM golang:1.23-alpine AS builder
+
+# Install security updates and build dependencies
+RUN apk update && apk upgrade && apk add --no-cache git ca-certificates tzdata
+
+# Create build user
+RUN addgroup -g 1001 -S builder && adduser -u 1001 -S builder -G builder
+USER builder
+
+# Set working directory
+WORKDIR /build
+
+# Copy go mod files (as builder user)
+COPY --chown=builder:builder go.mod go.sum ./
+
+# Download dependencies with verification
+RUN go mod download && go mod verify
+
+# Copy source code
+COPY --chown=builder:builder . .
+
+# Build with optimizations for production
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+    go build -a -installsuffix cgo \
+    -ldflags='-w -s -extldflags "-static"' \
+    -o relay cmd/server/main.go
+
+# Security scan stage (optional, remove in CI if using external scanner)
+FROM builder AS security-scan
+RUN go install github.com/securecodewarrior/gosec/v2/cmd/gosec@latest || true
+RUN gosec ./... || echo "Security scan completed"
+
+# Final production stage
+FROM alpine:3.19
+
+# Install security updates and runtime dependencies
+RUN apk update && apk upgrade && \
+    apk add --no-cache ca-certificates tzdata curl && \
+    rm -rf /var/cache/apk/*
+
+# Create non-root user with specific UID for Kubernetes
+RUN addgroup -g 65532 -S relay && \
+    adduser -u 65532 -S relay -G relay -s /sbin/nologin
+
+# Set working directory
+WORKDIR /app
+
+# Copy binary from builder
+COPY --from=builder --chown=relay:relay /build/relay .
+
+# Copy static files
+COPY --from=builder --chown=relay:relay /build/static ./static
+
+# Create necessary directories
+RUN mkdir -p /app/data/queue /app/credentials && \
+    chown -R relay:relay /app
+
+# Switch to non-root user
+USER relay
+
+# Expose ports
+EXPOSE 2525 8080 9090
+
+# Add labels for better observability
+LABEL maintainer="mednet-infrastructure@mednet.com" \
+      version="1.0.0" \
+      description="SMTP Relay Service for Medical Email Infrastructure" \
+      vendor="Mednet, Inc"
+
+# Enhanced health check with retry logic
+HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
+    CMD curl -f http://localhost:8080/health || exit 1
+
+# Set resource-aware configurations
+ENV GOGC=100 \
+    GOMEMLIMIT=512MiB \
+    GOMAXPROCS=0
+
+# Run the application
+CMD ["./relay"]

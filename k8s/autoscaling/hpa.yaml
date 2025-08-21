@@ -1,0 +1,159 @@
+---
+# Horizontal Pod Autoscaler for SMTP Relay Service
+# Scales based on CPU, memory, and custom email queue metrics
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: smtp-relay-hpa
+  namespace: mednet-email
+  labels:
+    app: smtp-relay
+    component: autoscaling
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: smtp-relay
+  
+  # Scaling boundaries for medical service reliability
+  minReplicas: 3   # Minimum for HA in medical environment
+  maxReplicas: 50  # Maximum for handling email bursts
+  
+  # Scaling behavior configuration
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 60  # Quick scale up for email bursts
+      policies:
+      - type: Percent
+        value: 100  # Double pods quickly for emergency notifications
+        periodSeconds: 60
+      - type: Pods
+        value: 5    # Add up to 5 pods at once
+        periodSeconds: 60
+      selectPolicy: Max  # Use the more aggressive policy
+    
+    scaleDown:
+      stabilizationWindowSeconds: 300  # Conservative scale down to avoid thrashing
+      policies:
+      - type: Percent
+        value: 25   # Remove 25% of pods at most
+        periodSeconds: 120
+      - type: Pods
+        value: 2    # Remove maximum 2 pods at once
+        periodSeconds: 120
+      selectPolicy: Min  # Use the more conservative policy
+  
+  # Metrics for scaling decisions
+  metrics:
+  # CPU utilization - primary metric for general load
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70  # Scale up when CPU > 70%
+  
+  # Memory utilization - important for email processing
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 80  # Scale up when memory > 80%
+  
+  # Custom metric: Queue depth (requires custom metrics adapter)
+  - type: Pods
+    pods:
+      metric:
+        name: email_queue_depth
+      target:
+        type: AverageValue
+        averageValue: "50"  # Scale up when avg queue depth > 50 messages per pod
+  
+  # Custom metric: Messages per second
+  - type: Pods
+    pods:
+      metric:
+        name: emails_processed_per_second
+      target:
+        type: AverageValue
+        averageValue: "10"  # Scale up when processing > 10 emails/sec per pod
+
+---
+# Vertical Pod Autoscaler for resource optimization
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: smtp-relay-vpa
+  namespace: mednet-email
+  labels:
+    app: smtp-relay
+    component: autoscaling
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: smtp-relay
+  
+  # VPA mode - recommendation only to avoid conflicts with HPA
+  updatePolicy:
+    updateMode: "Off"  # Only provide recommendations, don't auto-update
+  
+  # Resource policy to set boundaries
+  resourcePolicy:
+    containerPolicies:
+    - containerName: smtp-relay
+      minAllowed:
+        cpu: 100m
+        memory: 256Mi
+      maxAllowed:
+        cpu: 4
+        memory: 8Gi
+      controlledResources: ["cpu", "memory"]
+      controlledValues: RequestsAndLimits
+
+---
+# PodDisruptionBudget to ensure availability during scaling
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: smtp-relay-pdb
+  namespace: mednet-email
+  labels:
+    app: smtp-relay
+spec:
+  minAvailable: 2  # Always keep at least 2 pods running for HA
+  selector:
+    matchLabels:
+      app: smtp-relay
+
+---
+# Custom metric for queue depth monitoring
+# This would be used with Prometheus Adapter or similar
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: custom-metrics-config
+  namespace: mednet-email
+data:
+  config.yaml: |
+    rules:
+    - seriesQuery: 'email_queue_depth{namespace!="",pod!=""}'
+      resources:
+        overrides:
+          namespace: {resource: "namespace"}
+          pod: {resource: "pod"}
+      name:
+        matches: "^(.*)$"
+        as: "email_queue_depth"
+      metricsQuery: 'avg_over_time(<<.Series>>{<<.LabelMatchers>>}[2m])'
+    
+    - seriesQuery: 'emails_processed_total{namespace!="",pod!=""}'
+      resources:
+        overrides:
+          namespace: {resource: "namespace"}
+          pod: {resource: "pod"}
+      name:
+        matches: "^(.*)_total$"
+        as: "emails_processed_per_second"
+      metricsQuery: 'rate(<<.Series>>{<<.LabelMatchers>>}[2m])'

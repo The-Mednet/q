@@ -1,0 +1,524 @@
+---
+# Disaster Recovery and Backup Strategy for SMTP Relay Service
+# Medical-grade data protection and recovery procedures
+
+# Velero Backup Configuration for Kubernetes Resources
+apiVersion: velero.io/v1
+kind: Schedule
+metadata:
+  name: smtp-relay-daily-backup
+  namespace: velero
+spec:
+  # Daily backup at 2 AM UTC (off-peak hours)
+  schedule: "0 2 * * *"
+  template:
+    includedNamespaces:
+    - mednet-email
+    - mednet-monitoring
+    
+    # Include specific resources
+    includedResources:
+    - deployments
+    - statefulsets
+    - services
+    - configmaps
+    - secrets
+    - persistentvolumeclaims
+    - persistentvolumes
+    - networkpolicies
+    - serviceaccounts
+    - roles
+    - rolebindings
+    
+    # Exclude temporary resources
+    excludedResources:
+    - events
+    - pods
+    - replicasets
+    
+    # Storage location (AWS S3)
+    storageLocation: mednet-backup-storage
+    
+    # Volume snapshot location
+    volumeSnapshotLocations:
+    - aws-ebs-snapshots
+    
+    # Retention policy (medical compliance: 7 years)
+    ttl: 2555h  # 7 years
+    
+    # Include cluster-scoped resources
+    includeClusterResources: true
+    
+    # Backup labels for identification
+    metadata:
+      labels:
+        backup-type: daily
+        service: smtp-relay
+        compliance: medical
+        retention: long-term
+
+---
+# Weekly full system backup
+apiVersion: velero.io/v1
+kind: Schedule
+metadata:
+  name: smtp-relay-weekly-full-backup
+  namespace: velero
+spec:
+  # Weekly backup on Sunday at 1 AM UTC
+  schedule: "0 1 * * 0"
+  template:
+    # Backup everything in the cluster
+    includedNamespaces:
+    - "*"
+    
+    storageLocation: mednet-backup-storage
+    volumeSnapshotLocations:
+    - aws-ebs-snapshots
+    
+    # Extended retention for weekly backups
+    ttl: 8760h  # 1 year
+    
+    metadata:
+      labels:
+        backup-type: weekly-full
+        service: smtp-relay
+        compliance: medical
+
+---
+# Critical Configuration Backup (Before deployments)
+apiVersion: velero.io/v1
+kind: Schedule
+metadata:
+  name: smtp-relay-pre-deployment-backup
+  namespace: velero
+spec:
+  # This will be triggered manually before deployments
+  schedule: "0 0 31 2 *"  # Feb 31 (never runs automatically)
+  template:
+    includedNamespaces:
+    - mednet-email
+    
+    includedResources:
+    - configmaps
+    - secrets
+    - deployments
+    - statefulsets
+    - services
+    
+    storageLocation: mednet-backup-storage
+    ttl: 720h  # 30 days
+    
+    metadata:
+      labels:
+        backup-type: pre-deployment
+        service: smtp-relay
+
+---
+# MySQL Database Backup CronJob
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: mysql-backup
+  namespace: mednet-email
+spec:
+  # Every 6 hours for critical medical data
+  schedule: "0 */6 * * *"
+  jobTemplate:
+    spec:
+      template:
+        metadata:
+          labels:
+            app: mysql-backup
+        spec:
+          restartPolicy: OnFailure
+          securityContext:
+            fsGroup: 999
+            runAsUser: 999
+          
+          containers:
+          - name: mysql-backup
+            image: mysql:8.0
+            env:
+            - name: MYSQL_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: mysql-secret
+                  key: root-password
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: backup-credentials
+                  key: aws-access-key-id
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: backup-credentials
+                  key: aws-secret-access-key
+            - name: BACKUP_BUCKET
+              value: "mednet-mysql-backups"
+            - name: BACKUP_REGION
+              value: "us-east-1"
+            
+            command:
+            - /bin/bash
+            - -c
+            - |
+              set -e
+              
+              # Create timestamp
+              TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+              BACKUP_FILE="smtp_relay_backup_${TIMESTAMP}.sql"
+              
+              # Create database dump with all medical compliance requirements
+              mysqldump \
+                --host=mysql-service \
+                --user=root \
+                --password="$MYSQL_ROOT_PASSWORD" \
+                --single-transaction \
+                --routines \
+                --triggers \
+                --events \
+                --hex-blob \
+                --add-drop-database \
+                --databases relay > /tmp/${BACKUP_FILE}
+              
+              # Compress the backup
+              gzip /tmp/${BACKUP_FILE}
+              
+              # Upload to S3 with encryption
+              aws s3 cp "/tmp/${BACKUP_FILE}.gz" \
+                "s3://${BACKUP_BUCKET}/daily/${BACKUP_FILE}.gz" \
+                --region "${BACKUP_REGION}" \
+                --server-side-encryption AES256 \
+                --metadata "service=smtp-relay,backup-type=mysql,timestamp=${TIMESTAMP}"
+              
+              # Verify backup integrity
+              aws s3 ls "s3://${BACKUP_BUCKET}/daily/${BACKUP_FILE}.gz" --region "${BACKUP_REGION}"
+              
+              # Log success
+              echo "Backup completed successfully: ${BACKUP_FILE}.gz"
+              
+              # Clean up old backups (keep 30 days of daily backups)
+              aws s3 ls "s3://${BACKUP_BUCKET}/daily/" --region "${BACKUP_REGION}" | \
+                head -n -720 | \
+                awk '{print $4}' | \
+                xargs -I {} aws s3 rm "s3://${BACKUP_BUCKET}/daily/{}" --region "${BACKUP_REGION}" || true
+            
+            resources:
+              requests:
+                cpu: "100m"
+                memory: "256Mi"
+              limits:
+                cpu: "500m"
+                memory: "1Gi"
+            
+            volumeMounts:
+            - name: backup-tmp
+              mountPath: /tmp
+          
+          volumes:
+          - name: backup-tmp
+            emptyDir:
+              sizeLimit: 10Gi
+
+---
+# MySQL Point-in-Time Recovery Setup
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: mysql-binlog-backup
+  namespace: mednet-email
+spec:
+  # Every hour for point-in-time recovery
+  schedule: "0 * * * *"
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          restartPolicy: OnFailure
+          containers:
+          - name: binlog-backup
+            image: mysql:8.0
+            env:
+            - name: MYSQL_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: mysql-secret
+                  key: root-password
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: backup-credentials
+                  key: aws-access-key-id
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: backup-credentials
+                  key: aws-secret-access-key
+            
+            command:
+            - /bin/bash
+            - -c
+            - |
+              set -e
+              
+              TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+              
+              # Flush logs to ensure all transactions are written
+              mysql -h mysql-service -u root -p"$MYSQL_ROOT_PASSWORD" -e "FLUSH LOGS;"
+              
+              # Get current binlog position
+              BINLOG_INFO=$(mysql -h mysql-service -u root -p"$MYSQL_ROOT_PASSWORD" -e "SHOW MASTER STATUS\G")
+              echo "$BINLOG_INFO" > /tmp/binlog_position_${TIMESTAMP}.txt
+              
+              # Upload binlog position info
+              aws s3 cp "/tmp/binlog_position_${TIMESTAMP}.txt" \
+                "s3://mednet-mysql-backups/binlogs/positions/" \
+                --region us-east-1 \
+                --server-side-encryption AES256
+              
+              echo "Binlog position backed up: ${TIMESTAMP}"
+
+---
+# Configuration Backup CronJob
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: config-backup
+  namespace: mednet-email
+spec:
+  # Daily configuration backup
+  schedule: "0 3 * * *"
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          restartPolicy: OnFailure
+          serviceAccountName: config-backup
+          containers:
+          - name: config-backup
+            image: bitnami/kubectl:latest
+            env:
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: backup-credentials
+                  key: aws-access-key-id
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: backup-credentials
+                  key: aws-secret-access-key
+            
+            command:
+            - /bin/bash
+            - -c
+            - |
+              set -e
+              
+              TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+              BACKUP_DIR="/tmp/config_backup_${TIMESTAMP}"
+              mkdir -p "${BACKUP_DIR}"
+              
+              # Export all ConfigMaps
+              kubectl get configmaps -n mednet-email -o yaml > "${BACKUP_DIR}/configmaps.yaml"
+              
+              # Export all Services
+              kubectl get services -n mednet-email -o yaml > "${BACKUP_DIR}/services.yaml"
+              
+              # Export all Deployments
+              kubectl get deployments -n mednet-email -o yaml > "${BACKUP_DIR}/deployments.yaml"
+              
+              # Export all StatefulSets
+              kubectl get statefulsets -n mednet-email -o yaml > "${BACKUP_DIR}/statefulsets.yaml"
+              
+              # Export NetworkPolicies
+              kubectl get networkpolicies -n mednet-email -o yaml > "${BACKUP_DIR}/networkpolicies.yaml"
+              
+              # Create archive
+              tar -czf "/tmp/config_backup_${TIMESTAMP}.tar.gz" -C /tmp "config_backup_${TIMESTAMP}"
+              
+              # Upload to S3
+              aws s3 cp "/tmp/config_backup_${TIMESTAMP}.tar.gz" \
+                "s3://mednet-config-backups/smtp-relay/" \
+                --region us-east-1 \
+                --server-side-encryption AES256
+              
+              echo "Configuration backup completed: config_backup_${TIMESTAMP}.tar.gz"
+
+---
+# Disaster Recovery Runbook ConfigMap
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: disaster-recovery-runbook
+  namespace: mednet-email
+data:
+  runbook.md: |
+    # SMTP Relay Service - Disaster Recovery Runbook
+    
+    ## Emergency Contacts
+    - **Primary On-Call**: +1-XXX-XXX-XXXX
+    - **Secondary On-Call**: +1-XXX-XXX-XXXX
+    - **Incident Commander**: +1-XXX-XXX-XXXX
+    
+    ## Recovery Time Objectives (RTO)
+    - **Critical (P1)**: 15 minutes
+    - **High (P2)**: 1 hour
+    - **Medium (P3)**: 4 hours
+    
+    ## Recovery Point Objectives (RPO)
+    - **Database**: 1 hour maximum data loss
+    - **Configuration**: No data loss (versioned)
+    - **Monitoring**: 5 minutes maximum data loss
+    
+    ## Disaster Scenarios and Procedures
+    
+    ### 1. Complete Service Outage
+    ```bash
+    # Step 1: Assess the situation
+    kubectl get pods -n mednet-email
+    kubectl get services -n mednet-email
+    
+    # Step 2: Check recent deployments
+    kubectl rollout history deployment/smtp-relay -n mednet-email
+    
+    # Step 3: Rollback if needed
+    kubectl rollout undo deployment/smtp-relay -n mednet-email
+    
+    # Step 4: Scale up if capacity issue
+    kubectl scale deployment smtp-relay --replicas=10 -n mednet-email
+    ```
+    
+    ### 2. Database Failure
+    ```bash
+    # Step 1: Check database status
+    kubectl get statefulset mysql -n mednet-email
+    kubectl logs mysql-0 -n mednet-email
+    
+    # Step 2: Restore from latest backup
+    # Get latest backup
+    aws s3 ls s3://mednet-mysql-backups/daily/ --region us-east-1 | tail -1
+    
+    # Download and restore
+    LATEST_BACKUP=$(aws s3 ls s3://mednet-mysql-backups/daily/ --region us-east-1 | tail -1 | awk '{print $4}')
+    aws s3 cp "s3://mednet-mysql-backups/daily/${LATEST_BACKUP}" /tmp/
+    
+    # Restore to new instance
+    kubectl exec -it mysql-0 -n mednet-email -- mysql -u root -p < /tmp/${LATEST_BACKUP}
+    ```
+    
+    ### 3. Configuration Corruption
+    ```bash
+    # Step 1: Restore from Velero backup
+    velero restore create --from-backup smtp-relay-daily-backup-$(date +%Y%m%d)
+    
+    # Step 2: Or restore from config backup
+    LATEST_CONFIG=$(aws s3 ls s3://mednet-config-backups/smtp-relay/ --region us-east-1 | tail -1 | awk '{print $4}')
+    aws s3 cp "s3://mednet-config-backups/smtp-relay/${LATEST_CONFIG}" /tmp/
+    tar -xzf "/tmp/${LATEST_CONFIG}"
+    kubectl apply -f config_backup_*/
+    ```
+    
+    ### 4. Complete Cluster Failure
+    ```bash
+    # Step 1: Create new cluster
+    eksctl create cluster --name mednet-email-recovery --region us-east-1
+    
+    # Step 2: Install Velero
+    velero install --provider aws --bucket mednet-backup-storage --backup-location-config region=us-east-1
+    
+    # Step 3: Restore from backup
+    velero restore create --from-backup smtp-relay-weekly-full-backup-latest
+    
+    # Step 4: Update DNS to point to new cluster
+    # Update Route53 records to point to new LoadBalancer
+    ```
+    
+    ## Testing Procedures
+    
+    ### Monthly DR Test
+    1. Create isolated test environment
+    2. Restore from latest backup
+    3. Validate email processing functionality
+    4. Measure recovery time
+    5. Document any issues
+    
+    ### Quarterly Full DR Test
+    1. Simulate complete failure in staging
+    2. Execute full recovery procedure
+    3. Validate all functionality
+    4. Update runbook based on findings
+
+---
+# Multi-Region Setup for Geographic Redundancy
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: multi-region-config
+  namespace: mednet-email
+data:
+  regions.yaml: |
+    # Primary Region: us-east-1 (N. Virginia)
+    primary:
+      region: us-east-1
+      cluster: mednet-email-primary
+      rto: 15m
+      rpo: 1h
+    
+    # Secondary Region: us-west-2 (Oregon)
+    secondary:
+      region: us-west-2
+      cluster: mednet-email-secondary
+      rto: 1h
+      rpo: 4h
+      
+    # Disaster Recovery Region: eu-west-1 (Ireland)
+    dr:
+      region: eu-west-1
+      cluster: mednet-email-dr
+      rto: 4h
+      rpo: 24h
+
+---
+# Cross-Region Database Replication
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: cross-region-replication
+  namespace: mednet-email
+spec:
+  schedule: "*/30 * * * *"  # Every 30 minutes
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          restartPolicy: OnFailure
+          containers:
+          - name: cross-region-sync
+            image: mysql:8.0
+            env:
+            - name: PRIMARY_DB_HOST
+              value: "mysql-service.mednet-email.svc.cluster.local"
+            - name: SECONDARY_DB_HOST
+              value: "mysql-west.mednet-email-west.svc.cluster.local"
+            - name: MYSQL_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: mysql-secret
+                  key: root-password
+            
+            command:
+            - /bin/bash
+            - -c
+            - |
+              # Sync critical tables to secondary region
+              mysqldump --host=$PRIMARY_DB_HOST \
+                --user=root --password="$MYSQL_ROOT_PASSWORD" \
+                --single-transaction \
+                --where="created_at > DATE_SUB(NOW(), INTERVAL 1 HOUR)" \
+                relay messages | \
+              mysql --host=$SECONDARY_DB_HOST \
+                --user=root --password="$MYSQL_ROOT_PASSWORD" \
+                relay

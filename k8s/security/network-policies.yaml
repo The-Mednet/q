@@ -1,0 +1,505 @@
+---
+# Network Policies for SMTP Relay Service
+# Implements zero-trust networking for medical data protection
+
+# Default deny-all policy for the namespace
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: mednet-email
+spec:
+  podSelector: {}
+  policyTypes:
+  - Ingress
+  - Egress
+
+---
+# Allow SMTP relay to communicate with database
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: smtp-relay-to-database
+  namespace: mednet-email
+spec:
+  podSelector:
+    matchLabels:
+      app: smtp-relay
+  policyTypes:
+  - Egress
+  egress:
+  # MySQL communication
+  - to:
+    - podSelector:
+        matchLabels:
+          app: mysql
+    ports:
+    - protocol: TCP
+      port: 3306
+  # Redis communication for distributed rate limiting
+  - to:
+    - podSelector:
+        matchLabels:
+          app: redis
+    ports:
+    - protocol: TCP
+      port: 6379
+
+---
+# Allow SMTP relay to communicate with external APIs
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: smtp-relay-external-apis
+  namespace: mednet-email
+spec:
+  podSelector:
+    matchLabels:
+      app: smtp-relay
+  policyTypes:
+  - Egress
+  egress:
+  # Gmail API (Google Workspace)
+  - to: []
+    ports:
+    - protocol: TCP
+      port: 443
+  # DNS resolution
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          name: kube-system
+    ports:
+    - protocol: UDP
+      port: 53
+  # NTP for time synchronization (critical for email timestamps)
+  - to: []
+    ports:
+    - protocol: UDP
+      port: 123
+  # Webhook notifications
+  - to: []
+    ports:
+    - protocol: TCP
+      port: 443
+    - protocol: TCP
+      port: 80
+
+---
+# Allow incoming SMTP traffic
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: smtp-relay-ingress
+  namespace: mednet-email
+spec:
+  podSelector:
+    matchLabels:
+      app: smtp-relay
+  policyTypes:
+  - Ingress
+  ingress:
+  # SMTP traffic from load balancer and internal services
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          name: mednet-applications  # Applications namespace
+    - namespaceSelector:
+        matchLabels:
+          name: kube-system  # Load balancer
+    ports:
+    - protocol: TCP
+      port: 2525
+  # Web UI access from monitoring and admin
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          name: mednet-monitoring
+    - namespaceSelector:
+        matchLabels:
+          name: mednet-admin
+    ports:
+    - protocol: TCP
+      port: 8080
+  # Metrics scraping from Prometheus
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          name: mednet-monitoring
+      podSelector:
+        matchLabels:
+          app: prometheus
+    ports:
+    - protocol: TCP
+      port: 9090
+
+---
+# Database network policy - very restrictive
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: mysql-access-control
+  namespace: mednet-email
+spec:
+  podSelector:
+    matchLabels:
+      app: mysql
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  # Only SMTP relay can access database
+  - from:
+    - podSelector:
+        matchLabels:
+          app: smtp-relay
+    ports:
+    - protocol: TCP
+      port: 3306
+  # MySQL cluster internal communication
+  - from:
+    - podSelector:
+        matchLabels:
+          app: mysql
+    ports:
+    - protocol: TCP
+      port: 3306
+    - protocol: TCP
+      port: 33061  # Group replication
+    - protocol: TCP
+      port: 3307   # XtraBackup
+  # Monitoring access
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          name: mednet-monitoring
+      podSelector:
+        matchLabels:
+          app: prometheus
+    ports:
+    - protocol: TCP
+      port: 9104  # MySQL exporter
+  egress:
+  # DNS resolution
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          name: kube-system
+    ports:
+    - protocol: UDP
+      port: 53
+  # MySQL cluster internal communication
+  - to:
+    - podSelector:
+        matchLabels:
+          app: mysql
+    ports:
+    - protocol: TCP
+      port: 3306
+    - protocol: TCP
+      port: 33061
+    - protocol: TCP
+      port: 3307
+
+---
+# Redis network policy
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: redis-access-control
+  namespace: mednet-email
+spec:
+  podSelector:
+    matchLabels:
+      app: redis
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  # SMTP relay access for rate limiting
+  - from:
+    - podSelector:
+        matchLabels:
+          app: smtp-relay
+    ports:
+    - protocol: TCP
+      port: 6379
+  # Redis cluster internal communication
+  - from:
+    - podSelector:
+        matchLabels:
+          app: redis
+    ports:
+    - protocol: TCP
+      port: 6379
+    - protocol: TCP
+      port: 16379  # Cluster bus
+  # Monitoring access
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          name: mednet-monitoring
+      podSelector:
+        matchLabels:
+          app: prometheus
+    ports:
+    - protocol: TCP
+      port: 9121  # Redis exporter
+  egress:
+  # DNS resolution
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          name: kube-system
+    ports:
+    - protocol: UDP
+      port: 53
+  # Redis cluster communication
+  - to:
+    - podSelector:
+        matchLabels:
+          app: redis
+    ports:
+    - protocol: TCP
+      port: 6379
+    - protocol: TCP
+      port: 16379
+
+---
+# Monitoring namespace access policy
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: monitoring-access
+  namespace: mednet-email
+spec:
+  podSelector: {}
+  policyTypes:
+  - Ingress
+  ingress:
+  # Allow Prometheus to scrape metrics
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          name: mednet-monitoring
+      podSelector:
+        matchLabels:
+          app: prometheus
+    ports:
+    - protocol: TCP
+      port: 9090  # SMTP relay metrics
+    - protocol: TCP
+      port: 9104  # MySQL exporter
+    - protocol: TCP
+      port: 9121  # Redis exporter
+
+---
+# Istio Service Mesh Configuration
+# VirtualService for SMTP relay
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: smtp-relay-vs
+  namespace: mednet-email
+spec:
+  hosts:
+  - smtp-relay-service
+  tcp:
+  - match:
+    - port: 2525
+    route:
+    - destination:
+        host: smtp-relay-service
+        port:
+          number: 2525
+      weight: 100
+  http:
+  - match:
+    - port: 8080
+    route:
+    - destination:
+        host: smtp-relay-service
+        port:
+          number: 8080
+      weight: 100
+    timeout: 30s
+    retries:
+      attempts: 3
+      perTryTimeout: 10s
+
+---
+# DestinationRule for SMTP relay
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: smtp-relay-dr
+  namespace: mednet-email
+spec:
+  host: smtp-relay-service
+  trafficPolicy:
+    # Circuit breaker for medical reliability
+    connectionPool:
+      tcp:
+        maxConnections: 100
+        connectTimeout: 30s
+        tcpKeepalive:
+          time: 7200s
+          interval: 75s
+      http:
+        http1MaxPendingRequests: 100
+        http2MaxRequests: 1000
+        maxRequestsPerConnection: 10
+        maxRetries: 3
+        consecutiveGatewayErrors: 3
+        interval: 30s
+        baseEjectionTime: 30s
+        maxEjectionPercent: 50
+    # Load balancing
+    loadBalancer:
+      simple: LEAST_CONN
+    # TLS settings for internal communication
+    tls:
+      mode: ISTIO_MUTUAL
+
+---
+# Service Entry for Gmail API
+apiVersion: networking.istio.io/v1beta1
+kind: ServiceEntry
+metadata:
+  name: gmail-api
+  namespace: mednet-email
+spec:
+  hosts:
+  - www.googleapis.com
+  - gmail.googleapis.com
+  - oauth2.googleapis.com
+  ports:
+  - number: 443
+    name: https
+    protocol: HTTPS
+  location: MESH_EXTERNAL
+  resolution: DNS
+
+---
+# Service Entry for external webhook endpoints
+apiVersion: networking.istio.io/v1beta1
+kind: ServiceEntry
+metadata:
+  name: external-webhooks
+  namespace: mednet-email
+spec:
+  hosts:
+  - "*.webhook-providers.com"
+  - "*.mailgun.com"
+  ports:
+  - number: 443
+    name: https
+    protocol: HTTPS
+  - number: 80
+    name: http
+    protocol: HTTP
+  location: MESH_EXTERNAL
+  resolution: DNS
+
+---
+# Istio Gateway for external access (if needed)
+apiVersion: networking.istio.io/v1beta1
+kind: Gateway
+metadata:
+  name: smtp-relay-gateway
+  namespace: mednet-email
+spec:
+  selector:
+    istio: ingressgateway
+  servers:
+  # SMTP access (typically internal only)
+  - port:
+      number: 2525
+      name: smtp
+      protocol: TCP
+    hosts:
+    - smtp-internal.mednet.com
+  # Management UI (admin access only)
+  - port:
+      number: 443
+      name: https-admin
+      protocol: HTTPS
+    hosts:
+    - smtp-admin.mednet.com
+    tls:
+      mode: SIMPLE
+      credentialName: smtp-admin-tls
+
+---
+# PeerAuthentication for mTLS
+apiVersion: security.istio.io/v1beta1
+kind: PeerAuthentication
+metadata:
+  name: default
+  namespace: mednet-email
+spec:
+  mtls:
+    mode: STRICT  # Enforce mTLS for all communication
+
+---
+# AuthorizationPolicy for RBAC
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: smtp-relay-authz
+  namespace: mednet-email
+spec:
+  selector:
+    matchLabels:
+      app: smtp-relay
+  rules:
+  # Allow SMTP traffic from applications
+  - from:
+    - source:
+        namespaces: ["mednet-applications"]
+    to:
+    - operation:
+        ports: ["2525"]
+  # Allow admin access to web UI
+  - from:
+    - source:
+        namespaces: ["mednet-admin"]
+        principals: ["cluster.local/ns/mednet-admin/sa/smtp-admin"]
+    to:
+    - operation:
+        ports: ["8080"]
+  # Allow monitoring access
+  - from:
+    - source:
+        namespaces: ["mednet-monitoring"]
+        principals: ["cluster.local/ns/mednet-monitoring/sa/prometheus"]
+    to:
+    - operation:
+        ports: ["9090"]
+
+---
+# Database AuthorizationPolicy
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: mysql-authz
+  namespace: mednet-email
+spec:
+  selector:
+    matchLabels:
+      app: mysql
+  rules:
+  # Only SMTP relay can access database
+  - from:
+    - source:
+        principals: ["cluster.local/ns/mednet-email/sa/smtp-relay"]
+    to:
+    - operation:
+        ports: ["3306"]
+  # Allow monitoring
+  - from:
+    - source:
+        principals: ["cluster.local/ns/mednet-monitoring/sa/prometheus"]
+    to:
+    - operation:
+        ports: ["9104"]
