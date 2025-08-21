@@ -17,7 +17,7 @@ type Manager struct {
 	mu               sync.RWMutex
 }
 
-// NewManager creates a new workspace manager
+// NewManager creates a new workspace manager from a configuration file
 func NewManager(configFile string) (*Manager, error) {
 	manager := &Manager{
 		workspaces:       make(map[string]*config.WorkspaceConfig),
@@ -28,6 +28,37 @@ func NewManager(configFile string) (*Manager, error) {
 		return nil, fmt.Errorf("failed to load workspaces: %w", err)
 	}
 	
+	return manager, nil
+}
+
+// NewManagerFromJSON creates a new workspace manager from JSON data
+func NewManagerFromJSON(jsonData []byte) (*Manager, error) {
+	manager := &Manager{
+		workspaces:       make(map[string]*config.WorkspaceConfig),
+		domainToWorkspace: make(map[string]string),
+	}
+	
+	var workspaces []config.WorkspaceConfig
+	if err := json.Unmarshal(jsonData, &workspaces); err != nil {
+		return nil, fmt.Errorf("failed to parse workspace config from JSON: %w", err)
+	}
+	
+	// Process and store workspaces
+	for _, ws := range workspaces {
+		workspace := ws // Create a copy to avoid pointer issues
+		manager.workspaces[workspace.ID] = &workspace
+		
+		// Map domain to workspace ID
+		if workspace.Domain != "" {
+			manager.domainToWorkspace[workspace.Domain] = workspace.ID
+		}
+		
+		log.Printf("Loaded workspace: ID='%s', Domain='%s', Gmail=%v, Mailgun=%v",
+			workspace.ID, workspace.Domain, 
+			workspace.Gmail != nil, workspace.Mailgun != nil)
+	}
+	
+	log.Printf("Successfully loaded %d workspaces", len(manager.workspaces))
 	return manager, nil
 }
 

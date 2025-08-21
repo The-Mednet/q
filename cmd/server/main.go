@@ -98,12 +98,24 @@ func main() {
 	}
 
 	// Initialize workspace manager
-	workspaceFile := os.Getenv("WORKSPACE_CONFIG_FILE")
-	if workspaceFile == "" {
-		workspaceFile = "workspace.json" // Default workspace file
+	// Priority: 
+	// 1. RELAY_WORKSPACE_CONFIG environment variable (contains JSON directly)
+	// 2. WORKSPACE_CONFIG_FILE environment variable (path to file)
+	// 3. Default to workspace.json file
+	var workspaceManager *workspace.Manager
+	
+	if workspaceJSON := os.Getenv("RELAY_WORKSPACE_CONFIG"); workspaceJSON != "" {
+		log.Println("Loading workspace configuration from RELAY_WORKSPACE_CONFIG environment variable")
+		workspaceManager, err = workspace.NewManagerFromJSON([]byte(workspaceJSON))
+	} else {
+		workspaceFile := os.Getenv("WORKSPACE_CONFIG_FILE")
+		if workspaceFile == "" {
+			workspaceFile = "workspace.json" // Default workspace file
+		}
+		log.Printf("Loading workspace configuration from file: %s", workspaceFile)
+		workspaceManager, err = workspace.NewManager(workspaceFile)
 	}
 	
-	workspaceManager, err := workspace.NewManager(workspaceFile)
 	if err != nil {
 		log.Fatalf("Failed to initialize workspace manager: %v", err)
 	}

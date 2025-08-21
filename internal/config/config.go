@@ -25,7 +25,8 @@ type WorkspaceConfig struct {
 
 // WorkspaceGmailConfig contains Gmail-specific settings for a workspace
 type WorkspaceGmailConfig struct {
-	ServiceAccountFile string                        `json:"service_account_file"`
+	ServiceAccountFile string                        `json:"service_account_file,omitempty"` // Path to service account JSON file
+	ServiceAccountEnv  string                        `json:"service_account_env,omitempty"`  // Environment variable containing service account JSON
 	Enabled            bool                          `json:"enabled"`
 	DefaultSender      string                        `json:"default_sender,omitempty"` // Fallback sender when impersonation fails
 	RequireValidSender bool                          `json:"require_valid_sender,omitempty"` // Whether to validate sender emails

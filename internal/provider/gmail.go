@@ -78,13 +78,23 @@ func NewGmailProvider(workspaceID string, domain string, config *config.Workspac
 		return nil, fmt.Errorf("Gmail is disabled for workspace %s", workspaceID)
 	}
 	
-	if config.ServiceAccountFile == "" {
-		return nil, fmt.Errorf("Gmail service account file is required for workspace %s", workspaceID)
+	// Check if we have either file or env variable configured
+	if config.ServiceAccountFile == "" && config.ServiceAccountEnv == "" {
+		return nil, fmt.Errorf("Gmail service account credentials required for workspace %s (provide either service_account_file or service_account_env)", workspaceID)
 	}
 	
-	// Validate service account file exists
-	if _, err := os.Stat(config.ServiceAccountFile); os.IsNotExist(err) {
-		return nil, fmt.Errorf("Gmail service account file does not exist: %s", config.ServiceAccountFile)
+	// If using file, validate it exists
+	if config.ServiceAccountFile != "" {
+		if _, err := os.Stat(config.ServiceAccountFile); os.IsNotExist(err) {
+			return nil, fmt.Errorf("Gmail service account file does not exist: %s", config.ServiceAccountFile)
+		}
+	}
+	
+	// If using env variable, validate it's set
+	if config.ServiceAccountEnv != "" {
+		if os.Getenv(config.ServiceAccountEnv) == "" {
+			return nil, fmt.Errorf("Gmail service account environment variable %s is not set for workspace %s", config.ServiceAccountEnv, workspaceID)
+		}
 	}
 	
 	// Validate default sender if provided
@@ -221,6 +231,26 @@ func (g *GmailProvider) SendMessage(ctx context.Context, msg *models.Message) er
 }
 
 // getServiceForSender creates or retrieves a Gmail service for a specific sender email
+// getServiceAccountData returns the service account JSON data from file or environment variable
+func (g *GmailProvider) getServiceAccountData() ([]byte, error) {
+	// Try environment variable first if configured
+	if g.config.ServiceAccountEnv != "" {
+		envData := os.Getenv(g.config.ServiceAccountEnv)
+		if envData != "" {
+			return []byte(envData), nil
+		}
+		// Fall back to file if env is empty
+		log.Printf("Warning: Environment variable %s is empty, trying file fallback", g.config.ServiceAccountEnv)
+	}
+	
+	// Try file if configured
+	if g.config.ServiceAccountFile != "" {
+		return os.ReadFile(g.config.ServiceAccountFile)
+	}
+	
+	return nil, fmt.Errorf("no service account credentials available")
+}
+
 func (g *GmailProvider) getServiceForSender(ctx context.Context, senderEmail string) (*gmail.Service, error) {
 	// Check validation cache first if sender validation is required
 	if g.config.RequireValidSender {
@@ -250,13 +280,13 @@ func (g *GmailProvider) getServiceForSender(ctx context.Context, senderEmail str
 		return service, nil
 	}
 	
-	// Read service account file
-	serviceAccountData, err := os.ReadFile(g.config.ServiceAccountFile)
+	// Get service account data from file or environment variable
+	serviceAccountData, err := g.getServiceAccountData()
 	if err != nil {
 		return nil, &GmailAuthError{
 			SenderEmail: senderEmail,
-			ErrorType:   "service_account_file",
-			Message:     fmt.Sprintf("unable to read service account file %s", g.config.ServiceAccountFile),
+			ErrorType:   "service_account_credentials",
+			Message:     fmt.Sprintf("unable to get service account credentials: %v", err),
 			Cause:       err,
 		}
 	}
@@ -430,9 +460,9 @@ func (g *GmailProvider) HealthCheck(ctx context.Context) error {
 	
 	g.lastHealthCheck = time.Now()
 	
-	// Test by checking service account file accessibility first
-	if _, err := os.Stat(g.config.ServiceAccountFile); os.IsNotExist(err) {
-		err := fmt.Errorf("service account file does not exist: %s", g.config.ServiceAccountFile)
+	// Test by checking service account credentials accessibility
+	if _, err := g.getServiceAccountData(); err != nil {
+		err := fmt.Errorf("service account credentials not accessible: %v", err)
 		g.lastError = err
 		g.healthy = false
 		return err
@@ -546,9 +576,17 @@ func (g *GmailProvider) GetProviderInfo() ProviderInfo {
 		capabilities = append(capabilities, "default_sender_fallback")
 	}
 	
+	// Determine credential source for metadata
+	credSource := "not_configured"
+	if g.config.ServiceAccountEnv != "" {
+		credSource = "environment_variable"
+	} else if g.config.ServiceAccountFile != "" {
+		credSource = "file"
+	}
+	
 	metadata := map[string]string{
 		"workspace_id":           g.workspaceID,
-		"service_account_file":   g.config.ServiceAccountFile,
+		"credential_source":      credSource,
 		"require_valid_sender":   fmt.Sprintf("%v", g.config.RequireValidSender),
 		"cached_services":        fmt.Sprintf("%d", cacheStats["cached_services"]),
 		"validated_senders":      fmt.Sprintf("%d", validationStats["valid_count"]),
@@ -690,12 +728,12 @@ func (g *GmailProvider) ValidateSender(ctx context.Context, senderEmail string) 
 	}
 	
 	// Test authentication without caching the service
-	serviceAccountData, err := os.ReadFile(g.config.ServiceAccountFile)
+	serviceAccountData, err := g.getServiceAccountData()
 	if err != nil {
 		err = &GmailAuthError{
 			SenderEmail: senderEmail,
-			ErrorType:   "service_account_file",
-			Message:     fmt.Sprintf("unable to read service account file %s", g.config.ServiceAccountFile),
+			ErrorType:   "service_account_credentials",
+			Message:     fmt.Sprintf("unable to get service account credentials: %v", err),
 			Cause:       err,
 		}
 		g.cacheValidationResult(senderEmail, false, err)
