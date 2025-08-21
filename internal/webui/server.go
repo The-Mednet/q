@@ -6,7 +6,9 @@ import (
 	"html/template"
 	"log"
 	"net/http"
+	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"relay/internal/gmail"
@@ -60,7 +62,8 @@ func NewServer(q QueueStats, gc *gmail.Client, p ProcessorInterface, rs *recipie
 }
 
 func (s *Server) setupRoutes() {
-	s.router.PathPrefix("/static/").Handler(http.StripPrefix("/static/", http.FileServer(http.Dir("static"))))
+	// Custom static file handler with proper MIME types
+	s.router.PathPrefix("/static/").HandlerFunc(s.handleStaticFiles)
 	s.router.HandleFunc("/", s.handleIndex).Methods("GET")
 	s.router.HandleFunc("/healthCheck", s.handleHealthCheck).Methods("GET")
 	s.router.HandleFunc("/api/messages", s.handleGetMessages).Methods("GET")
@@ -97,6 +100,52 @@ func (s *Server) Start(port int) error {
 	addr := fmt.Sprintf(":%d", port)
 	log.Printf("Starting Web UI server on http://localhost%s", addr)
 	return http.ListenAndServe(addr, s.router)
+}
+
+func (s *Server) handleStaticFiles(w http.ResponseWriter, r *http.Request) {
+	// Strip the /static/ prefix to get the actual file path
+	path := strings.TrimPrefix(r.URL.Path, "/static/")
+	
+	// Prevent directory traversal attacks
+	if strings.Contains(path, "..") {
+		http.Error(w, "Invalid path", http.StatusBadRequest)
+		return
+	}
+	
+	// Set proper MIME types based on file extension
+	ext := strings.ToLower(filepath.Ext(path))
+	switch ext {
+	case ".css":
+		w.Header().Set("Content-Type", "text/css; charset=utf-8")
+	case ".js":
+		w.Header().Set("Content-Type", "application/javascript; charset=utf-8")
+	case ".html":
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	case ".png":
+		w.Header().Set("Content-Type", "image/png")
+	case ".jpg", ".jpeg":
+		w.Header().Set("Content-Type", "image/jpeg")
+	case ".svg":
+		w.Header().Set("Content-Type", "image/svg+xml")
+	case ".ico":
+		w.Header().Set("Content-Type", "image/x-icon")
+	case ".json":
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	case ".woff":
+		w.Header().Set("Content-Type", "font/woff")
+	case ".woff2":
+		w.Header().Set("Content-Type", "font/woff2")
+	default:
+		w.Header().Set("Content-Type", "application/octet-stream")
+	}
+	
+	// Set cache control headers for static assets
+	if ext == ".css" || ext == ".js" || ext == ".png" || ext == ".jpg" || ext == ".jpeg" {
+		w.Header().Set("Cache-Control", "public, max-age=3600")
+	}
+	
+	// Serve the file from the static directory
+	http.ServeFile(w, r, filepath.Join("static", path))
 }
 
 func (s *Server) handleHealthCheck(w http.ResponseWriter, r *http.Request) {
