@@ -1,12 +1,6 @@
 # Stage 1: Build the Go application
 FROM golang:1.23-alpine AS builder
 
-# Set Go environment
-ENV GO111MODULE=on \
-    CGO_ENABLED=0 \
-    GOOS=linux \
-    GOARCH=amd64
-
 ENV APP_HOME=/mednet/q
 WORKDIR $APP_HOME
 
@@ -18,7 +12,7 @@ RUN go mod download
 COPY . .
 
 # 3) Build your binary
-RUN go build -a -installsuffix cgo -o relay ./cmd/server
+RUN go build -o relay ./cmd/server
 
 # Stage 2: Create the final minimal image
 FROM alpine:latest
