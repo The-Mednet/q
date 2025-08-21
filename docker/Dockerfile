@@ -12,7 +12,7 @@ RUN go mod download
 COPY . .
 
 # 3) Build your binary
-RUN go build -o relay .
+RUN go build -o relay cmd/server/main.go
 
 # Stage 2: Create the final minimal image
 FROM alpine:latest
@@ -25,5 +25,5 @@ WORKDIR $APP_HOME
 COPY --from=builder /mednet/q/relay .
 
 EXPOSE 8080
-EXPOSE 2025
+EXPOSE 2525
 CMD ["./relay"]
