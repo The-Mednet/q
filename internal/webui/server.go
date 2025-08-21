@@ -62,6 +62,7 @@ func NewServer(q QueueStats, gc *gmail.Client, p ProcessorInterface, rs *recipie
 func (s *Server) setupRoutes() {
 	s.router.PathPrefix("/static/").Handler(http.StripPrefix("/static/", http.FileServer(http.Dir("static"))))
 	s.router.HandleFunc("/", s.handleIndex).Methods("GET")
+	s.router.HandleFunc("/healthCheck", s.handleHealthCheck).Methods("GET")
 	s.router.HandleFunc("/api/messages", s.handleGetMessages).Methods("GET")
 	s.router.HandleFunc("/api/messages/{id}", s.handleGetMessage).Methods("GET")
 	s.router.HandleFunc("/api/messages/{id}", s.handleDeleteMessage).Methods("DELETE")
@@ -96,6 +97,55 @@ func (s *Server) Start(port int) error {
 	addr := fmt.Sprintf(":%d", port)
 	log.Printf("Starting Web UI server on http://localhost%s", addr)
 	return http.ListenAndServe(addr, s.router)
+}
+
+func (s *Server) handleHealthCheck(w http.ResponseWriter, r *http.Request) {
+	// Create health check response
+	health := map[string]interface{}{
+		"status": "healthy",
+		"timestamp": time.Now().Unix(),
+		"service": "smtp-relay",
+	}
+
+	// Check queue availability
+	if s.queue != nil {
+		if stats, err := s.queue.GetStats(); err == nil {
+			health["queue"] = "healthy"
+			if total, ok := stats["total"]; ok {
+				health["queue_total"] = total
+			}
+		} else {
+			health["queue"] = "unhealthy"
+			health["queue_error"] = err.Error()
+			health["status"] = "degraded"
+		}
+	} else {
+		health["queue"] = "unavailable"
+		health["status"] = "degraded"
+	}
+
+	// Check processor status
+	if s.processor != nil {
+		isRunning, lastProcessed, _ := s.processor.GetStatus()
+		health["processor"] = map[string]interface{}{
+			"running": isRunning,
+			"last_processed": lastProcessed.Unix(),
+		}
+	} else {
+		health["processor"] = "unavailable"
+		health["status"] = "degraded"
+	}
+
+	// Set appropriate status code
+	statusCode := http.StatusOK
+	if health["status"] == "degraded" {
+		statusCode = http.StatusServiceUnavailable
+	}
+
+	// Return JSON response
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(statusCode)
+	json.NewEncoder(w).Encode(health)
 }
 
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
