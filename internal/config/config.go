@@ -25,10 +25,17 @@ type WorkspaceConfig struct {
 
 // WorkspaceGmailConfig contains Gmail-specific settings for a workspace
 type WorkspaceGmailConfig struct {
-	ServiceAccountFile string `json:"service_account_file"`
-	Enabled            bool   `json:"enabled"`
-	DefaultSender      string `json:"default_sender,omitempty"` // Fallback sender when impersonation fails
-	RequireValidSender bool   `json:"require_valid_sender,omitempty"` // Whether to validate sender emails
+	ServiceAccountFile string                        `json:"service_account_file"`
+	Enabled            bool                          `json:"enabled"`
+	DefaultSender      string                        `json:"default_sender,omitempty"` // Fallback sender when impersonation fails
+	RequireValidSender bool                          `json:"require_valid_sender,omitempty"` // Whether to validate sender emails
+	HeaderRewrite      WorkspaceGmailHeaderRewrite   `json:"header_rewrite,omitempty"`
+}
+
+// WorkspaceGmailHeaderRewrite configures header rewriting for Gmail workspaces
+type WorkspaceGmailHeaderRewrite struct {
+	Enabled bool                           `json:"enabled"`
+	Rules   []WorkspaceHeaderRewriteRule   `json:"rules,omitempty"`
 }
 
 // WorkspaceMailgunConfig contains Mailgun-specific settings for a workspace

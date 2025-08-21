@@ -1,16 +1,19 @@
 package smtp
 
 import (
+	"crypto/subtle"
 	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
 	"log"
+	"os"
 	"strings"
 	"time"
 
 	"relay/internal/config"
 	"relay/internal/queue"
+	"relay/internal/validation"
 	"relay/internal/workspace"
 	"relay/pkg/models"
 
@@ -41,7 +44,7 @@ func NewServer(cfg *config.SMTPConfig, q queue.Queue, workspaceManager *workspac
 	server.WriteTimeout = cfg.WriteTimeout
 	server.MaxMessageBytes = cfg.MaxSize
 	server.MaxRecipients = 100
-	server.AllowInsecureAuth = true
+	server.AllowInsecureAuth = false // Require secure authentication
 
 	s.server = server
 	return s
@@ -74,10 +77,41 @@ type Session struct {
 }
 
 func (s *Session) AuthPlain(username, password string) error {
+	// Require authentication credentials
+	if username == "" || password == "" {
+		return fmt.Errorf("authentication required: username and password cannot be empty")
+	}
+	
+	// Get expected credentials from environment
+	expectedUsername := os.Getenv("SMTP_AUTH_USERNAME")
+	expectedPassword := os.Getenv("SMTP_AUTH_PASSWORD")
+	
+	// Ensure credentials are configured
+	if expectedUsername == "" || expectedPassword == "" {
+		log.Printf("Warning: SMTP authentication not properly configured")
+		return fmt.Errorf("server configuration error: authentication not available")
+	}
+	
+	// Use constant-time comparison to prevent timing attacks
+	usernameMatch := subtle.ConstantTimeCompare([]byte(username), []byte(expectedUsername)) == 1
+	passwordMatch := subtle.ConstantTimeCompare([]byte(password), []byte(expectedPassword)) == 1
+	
+	if !usernameMatch || !passwordMatch {
+		log.Printf("Authentication failed for user: %s", username)
+		return fmt.Errorf("authentication failed: invalid credentials")
+	}
+	
+	log.Printf("Authentication successful for user: %s", username)
 	return nil
 }
 
 func (s *Session) Mail(from string, opts *smtp.MailOptions) error {
+	// Validate sender email address
+	if err := validation.ValidateEmail(from); err != nil {
+		log.Printf("Invalid sender email: %s - %v", from, err)
+		return fmt.Errorf("invalid sender address: %w", err)
+	}
+	
 	s.from = from
 
 	// Determine workspace for this sender
@@ -103,6 +137,17 @@ func (s *Session) Mail(from string, opts *smtp.MailOptions) error {
 }
 
 func (s *Session) Rcpt(to string, opts *smtp.RcptOptions) error {
+	// Validate recipient email address
+	if err := validation.ValidateEmail(to); err != nil {
+		log.Printf("Invalid recipient email: %s - %v", to, err)
+		return fmt.Errorf("invalid recipient address: %w", err)
+	}
+	
+	// Check recipient limit
+	if len(s.to) >= 100 {
+		return fmt.Errorf("too many recipients (max 100)")
+	}
+	
 	s.to = append(s.to, to)
 	return nil
 }
@@ -112,9 +157,19 @@ func (s *Session) Data(r io.Reader) error {
 		return errors.New("no mail transaction in progress")
 	}
 
-	data, err := io.ReadAll(r)
+	// Implement message size limit to prevent DoS attacks
+	const maxMessageSize = 25 * 1024 * 1024 // 25MB limit
+	limitedReader := io.LimitReader(r, maxMessageSize+1) // +1 to detect if limit exceeded
+	
+	data, err := io.ReadAll(limitedReader)
 	if err != nil {
 		return err
+	}
+	
+	// Check if message exceeded size limit
+	if len(data) > maxMessageSize {
+		log.Printf("Message size exceeded limit: %d bytes (max: %d bytes)", len(data), maxMessageSize)
+		return fmt.Errorf("message too large: exceeds %d MB limit", maxMessageSize/(1024*1024))
 	}
 
 	s.message.To = s.to
@@ -160,6 +215,11 @@ func (s *Session) parseMessage(data []byte) error {
 
 				switch strings.ToLower(key) {
 				case "subject":
+					// Validate subject
+					if err := validation.ValidateSubject(value); err != nil {
+						log.Printf("Invalid subject: %v", err)
+						value = validation.SanitizeString(value) // Sanitize instead of rejecting
+					}
 					s.message.Subject = value
 				case "content-type":
 					if strings.Contains(strings.ToLower(value), "text/html") {
@@ -170,13 +230,26 @@ func (s *Session) parseMessage(data []byte) error {
 				case "bcc":
 					s.message.BCC = parseAddresses(value)
 				case "x-campaign-id":
+					if err := validation.ValidateCampaignID(value); err != nil {
+						log.Printf("Invalid campaign ID: %v", err)
+						continue // Skip invalid campaign ID
+					}
 					s.message.CampaignID = value
 				case "x-user-id":
+					if err := validation.ValidateUserID(value); err != nil {
+						log.Printf("Invalid user ID: %v", err)
+						continue // Skip invalid user ID
+					}
 					s.message.UserID = value
 				default:
 					// Apply header modifications based on workspace provider
 					modifiedValue := s.modifyHeaderForProvider(key, value)
-					s.message.Headers[key] = modifiedValue
+					// Check if header should be removed
+					if modifiedValue != "__REMOVE_HEADER__" {
+						s.message.Headers[key] = modifiedValue
+					} else {
+						log.Printf("DEBUG: Removing header %s based on workspace rules", key)
+					}
 
 					// Extract recipient metadata from X-Recipient-* headers
 					if strings.HasPrefix(strings.ToLower(key), "x-recipient-") {
@@ -264,30 +337,55 @@ func (s *Session) modifyHeaderForProvider(headerName, headerValue string) string
 func (s *Session) applyHeaderRewriteRules(headerName, headerValue string, workspace *config.WorkspaceConfig) string {
 	log.Printf("DEBUG: applyHeaderRewriteRules called: header='%s', value='%s', workspace='%s'", headerName, headerValue, workspace.ID)
 
+	// Check if this workspace uses Gmail with header rewriting enabled
+	if workspace.Gmail != nil && workspace.Gmail.Enabled && workspace.Gmail.HeaderRewrite.Enabled {
+		log.Printf("DEBUG: Workspace %s has Gmail with header rewrite enabled, checking %d rules", 
+			workspace.ID, len(workspace.Gmail.HeaderRewrite.Rules))
+		
+		// Apply configured rewrite rules for Gmail
+		for i, rule := range workspace.Gmail.HeaderRewrite.Rules {
+			log.Printf("DEBUG: Checking Gmail rule %d: header_name='%s', new_value='%s'", i, rule.HeaderName, rule.NewValue)
+			if strings.EqualFold(rule.HeaderName, headerName) {
+				if rule.NewValue == "" {
+					// Empty new_value means remove the header
+					log.Printf("DEBUG: Gmail rule %d matched! Removing header %s from workspace %s",
+						i, headerName, workspace.ID)
+					return "__REMOVE_HEADER__" // Special marker for header removal
+				} else {
+					log.Printf("DEBUG: Gmail rule %d matched! Replacing header %s in workspace %s: %s -> %s",
+						i, headerName, workspace.ID, headerValue, rule.NewValue)
+					return rule.NewValue
+				}
+			}
+		}
+	}
+	
 	// Check if this workspace uses Mailgun with header rewriting enabled
-	if workspace.Mailgun == nil || !workspace.Mailgun.Enabled {
-		log.Printf("DEBUG: Workspace %s doesn't have Mailgun enabled, returning original value", workspace.ID)
-		return headerValue // Not a Mailgun workspace
-	}
+	if workspace.Mailgun != nil && workspace.Mailgun.Enabled {
+		log.Printf("DEBUG: Workspace %s has Mailgun enabled, checking header rewrite", workspace.ID)
 
-	log.Printf("DEBUG: Workspace %s has Mailgun enabled, checking header rewrite", workspace.ID)
+		if !workspace.Mailgun.HeaderRewrite.Enabled {
+			log.Printf("DEBUG: Header rewrite not enabled for workspace %s, applying default behavior", workspace.ID)
+			// Apply default behavior for Mailgun workspaces without custom rules
+			return s.applyDefaultMailgunHeaderRewrite(headerName, headerValue, workspace)
+		}
 
-	if !workspace.Mailgun.HeaderRewrite.Enabled {
-		log.Printf("DEBUG: Header rewrite not enabled for workspace %s, applying default behavior", workspace.ID)
-		// Apply default behavior for Mailgun workspaces without custom rules
-		return s.applyDefaultMailgunHeaderRewrite(headerName, headerValue, workspace)
-	}
+		log.Printf("DEBUG: Header rewrite enabled for workspace %s, checking %d rules", workspace.ID, len(workspace.Mailgun.HeaderRewrite.Rules))
 
-	log.Printf("DEBUG: Header rewrite enabled for workspace %s, checking %d rules", workspace.ID, len(workspace.Mailgun.HeaderRewrite.Rules))
-
-	// Apply configured rewrite rules - replace entire header value
-	for i, rule := range workspace.Mailgun.HeaderRewrite.Rules {
-		log.Printf("DEBUG: Checking rule %d: header_name='%s', new_value='%s'", i, rule.HeaderName, rule.NewValue)
-		if strings.EqualFold(rule.HeaderName, headerName) {
-			if rule.NewValue != "" {
-				log.Printf("DEBUG: Rule %d matched! Replacing header %s in workspace %s: %s -> %s",
-					i, headerName, workspace.ID, headerValue, rule.NewValue)
-				return rule.NewValue
+		// Apply configured rewrite rules for Mailgun
+		for i, rule := range workspace.Mailgun.HeaderRewrite.Rules {
+			log.Printf("DEBUG: Checking Mailgun rule %d: header_name='%s', new_value='%s'", i, rule.HeaderName, rule.NewValue)
+			if strings.EqualFold(rule.HeaderName, headerName) {
+				if rule.NewValue == "" {
+					// Empty new_value means remove the header
+					log.Printf("DEBUG: Mailgun rule %d matched! Removing header %s from workspace %s",
+						i, headerName, workspace.ID)
+					return "__REMOVE_HEADER__" // Special marker for header removal
+				} else {
+					log.Printf("DEBUG: Mailgun rule %d matched! Replacing header %s in workspace %s: %s -> %s",
+						i, headerName, workspace.ID, headerValue, rule.NewValue)
+					return rule.NewValue
+				}
 			}
 		}
 	}
@@ -349,47 +447,84 @@ func (s *Session) addMissingHeaders() {
 		return
 	}
 
-	log.Printf("DEBUG: Found workspace: ID='%s', Domain='%s', HasMailgun=%v",
-		workspace.ID, workspace.Domain, workspace.Mailgun != nil)
+	log.Printf("DEBUG: Found workspace: ID='%s', Domain='%s', HasMailgun=%v, HasGmail=%v",
+		workspace.ID, workspace.Domain, workspace.Mailgun != nil, workspace.Gmail != nil)
 
-	// Only process Mailgun workspaces with header rewriting enabled
-	if workspace.Mailgun == nil || !workspace.Mailgun.Enabled {
-		log.Printf("DEBUG: Workspace %s doesn't have Mailgun enabled, skipping addMissingHeaders", workspace.ID)
-		return
-	}
-
-	if !workspace.Mailgun.HeaderRewrite.Enabled {
-		log.Printf("DEBUG: Header rewrite not enabled for workspace %s, skipping addMissingHeaders", workspace.ID)
-		return
-	}
-
-	log.Printf("DEBUG: Processing %d header rewrite rules for workspace %s", len(workspace.Mailgun.HeaderRewrite.Rules), workspace.ID)
-
-	// Check each rewrite rule to see if the header exists
-	for i, rule := range workspace.Mailgun.HeaderRewrite.Rules {
-		log.Printf("DEBUG: Processing rule %d: header_name='%s', new_value='%s'", i, rule.HeaderName, rule.NewValue)
-
-		if rule.HeaderName == "" || rule.NewValue == "" {
-			log.Printf("DEBUG: Rule %d has empty header_name or new_value, skipping", i)
-			continue
-		}
-
-		// Check if header already exists (case-insensitive)
-		headerExists := false
-		for existingHeaderName := range s.message.Headers {
-			if strings.EqualFold(existingHeaderName, rule.HeaderName) {
-				log.Printf("DEBUG: Header %s already exists as %s, skipping", rule.HeaderName, existingHeaderName)
-				headerExists = true
-				break
+	// Process Gmail workspaces with header rewriting enabled
+	if workspace.Gmail != nil && workspace.Gmail.Enabled && workspace.Gmail.HeaderRewrite.Enabled {
+		log.Printf("DEBUG: Processing %d Gmail header rewrite rules for workspace %s", 
+			len(workspace.Gmail.HeaderRewrite.Rules), workspace.ID)
+		
+		// Check each rewrite rule to see if the header exists
+		for i, rule := range workspace.Gmail.HeaderRewrite.Rules {
+			log.Printf("DEBUG: Processing Gmail rule %d: header_name='%s', new_value='%s'", i, rule.HeaderName, rule.NewValue)
+			
+			if rule.HeaderName == "" {
+				log.Printf("DEBUG: Gmail rule %d has empty header_name, skipping", i)
+				continue
+			}
+			
+			// Check if header already exists (case-insensitive)
+			headerExists := false
+			for existingHeaderName := range s.message.Headers {
+				if strings.EqualFold(existingHeaderName, rule.HeaderName) {
+					log.Printf("DEBUG: Header %s already exists as %s", rule.HeaderName, existingHeaderName)
+					headerExists = true
+					// If the rule has no new_value, remove the existing header
+					if rule.NewValue == "" {
+						log.Printf("DEBUG: Removing existing header %s for Gmail workspace %s", existingHeaderName, workspace.ID)
+						delete(s.message.Headers, existingHeaderName)
+					}
+					break
+				}
+			}
+			
+			// If header doesn't exist and we have a new value, add it
+			if !headerExists && rule.NewValue != "" {
+				log.Printf("DEBUG: Adding missing header %s with value: %s", rule.HeaderName, rule.NewValue)
+				s.message.Headers[rule.HeaderName] = rule.NewValue
+				log.Printf("Added missing header %s to Gmail workspace %s: %s",
+					rule.HeaderName, workspace.ID, rule.NewValue)
 			}
 		}
+	}
+	
+	// Process Mailgun workspaces with header rewriting enabled
+	if workspace.Mailgun != nil && workspace.Mailgun.Enabled && workspace.Mailgun.HeaderRewrite.Enabled {
+		log.Printf("DEBUG: Processing %d Mailgun header rewrite rules for workspace %s", 
+			len(workspace.Mailgun.HeaderRewrite.Rules), workspace.ID)
 
-		// If header doesn't exist, add it
-		if !headerExists {
-			log.Printf("DEBUG: Adding missing header %s with value: %s", rule.HeaderName, rule.NewValue)
-			s.message.Headers[rule.HeaderName] = rule.NewValue
-			log.Printf("Added missing header %s to workspace %s: %s",
-				rule.HeaderName, workspace.ID, rule.NewValue)
+		// Check each rewrite rule to see if the header exists
+		for i, rule := range workspace.Mailgun.HeaderRewrite.Rules {
+			log.Printf("DEBUG: Processing Mailgun rule %d: header_name='%s', new_value='%s'", i, rule.HeaderName, rule.NewValue)
+
+			if rule.HeaderName == "" {
+				log.Printf("DEBUG: Mailgun rule %d has empty header_name, skipping", i)
+				continue
+			}
+
+			// Check if header already exists (case-insensitive)
+			headerExists := false
+			for existingHeaderName := range s.message.Headers {
+				if strings.EqualFold(existingHeaderName, rule.HeaderName) {
+					log.Printf("DEBUG: Header %s already exists as %s", rule.HeaderName, existingHeaderName)
+					headerExists = true
+					// If the rule has no new_value, remove the existing header
+					if rule.NewValue == "" {
+						log.Printf("DEBUG: Removing existing header %s for Mailgun workspace %s", existingHeaderName, workspace.ID)
+						delete(s.message.Headers, existingHeaderName)
+					}
+					break
+				}
+			}
+
+			// If header doesn't exist and we have a new value, add it
+			if !headerExists && rule.NewValue != "" {
+				log.Printf("DEBUG: Adding missing header %s with value: %s", rule.HeaderName, rule.NewValue)
+				s.message.Headers[rule.HeaderName] = rule.NewValue
+				log.Printf("Added missing header %s to Mailgun workspace %s: %s",
+					rule.HeaderName, workspace.ID, rule.NewValue)
+			}
 		}
 	}
 

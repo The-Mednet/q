@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"regexp"
 	"strings"
 	"time"
 
@@ -154,22 +155,29 @@ func (q *MySQLQueue) Dequeue(batchSize int) ([]*models.Message, error) {
 	}
 
 	if len(ids) > 0 {
-		placeholders := strings.Repeat("?,", len(ids))
-		placeholders = placeholders[:len(placeholders)-1]
-
-		updateQuery := fmt.Sprintf(
-			"UPDATE messages SET status = 'processing' WHERE id IN (%s)",
-			placeholders,
-		)
-
+		// Validate IDs to ensure they are valid UUIDs (defense in depth)
+		for _, id := range ids {
+			if len(id) != 36 || !isValidUUID(id) {
+				return nil, fmt.Errorf("invalid message ID format: %s", id)
+			}
+		}
+		
+		// Build parameterized query safely
+		placeholders := make([]string, len(ids))
 		args := make([]interface{}, len(ids))
 		for i, id := range ids {
+			placeholders[i] = "?"
 			args[i] = id
 		}
+		
+		updateQuery := fmt.Sprintf(
+			"UPDATE messages SET status = 'processing' WHERE id IN (%s)",
+			strings.Join(placeholders, ","),
+		)
 
 		_, err = tx.Exec(updateQuery, args...)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("failed to update message status: %w", err)
 		}
 	}
 
@@ -393,4 +401,11 @@ func (q *MySQLQueue) GetSentCountsByWorkspaceAndSender() (map[string]map[string]
 	}
 
 	return counts, nil
+}
+
+// isValidUUID validates that a string is a valid UUID format
+func isValidUUID(s string) bool {
+	// UUID format: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+	uuidRegex := regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
+	return uuidRegex.MatchString(s)
 }
