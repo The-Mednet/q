@@ -24,6 +24,9 @@ WORKDIR $APP_HOME
 # Copy binary + env
 COPY --from=builder /mednet/q/relay .
 
+# Copy static files for web UI
+COPY --from=builder /mednet/q/static ./static
+
 EXPOSE 8080
 EXPOSE 2525
 CMD ["./relay"]
