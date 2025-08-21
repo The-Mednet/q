@@ -2,15 +2,12 @@ package llm
 
 import (
 	"context"
-	"fmt"
-	"log"
 	"strings"
 
 	"relay/internal/config"
 	"relay/pkg/models"
-
-	blasterLLM "blaster/pkg/llm"
-	"blaster/pkg/types"
+	//blasterLLM "github.com/The-Mednet/blaster/pkg/llm"
+	//"github.com/The-Mednet/blaster/pkg/types"
 )
 
 type Personalizer struct {
@@ -35,7 +32,7 @@ func (p *Personalizer) PersonalizeMessage(ctx context.Context, msg *models.Messa
 	}
 
 	// Prepare the input for LLM
-	input := types.PromptInput{
+	/*input := types.PromptInput{
 		UserPromptName: "email_personalization",
 		Vars: map[string]interface{}{
 			"subject":   msg.Subject,
@@ -69,7 +66,7 @@ func (p *Personalizer) PersonalizeMessage(ctx context.Context, msg *models.Messa
 		msg.Text = result.Body
 	}
 
-	log.Printf("Successfully personalized message %s", msg.ID)
+	log.Printf("Successfully personalized message %s", msg.ID)*/
 	return nil
 }
 
@@ -113,7 +110,7 @@ func (p *Personalizer) PersonalizeWithCustomPrompt(ctx context.Context, msg *mod
 	}
 
 	// Get the provider directly
-	provider, err := blasterLLM.GetProvider(blasterLLM.Action("personalize"))
+	/*provider, err := blasterLLM.GetProvider(blasterLLM.Action("personalize"))
 	if err != nil {
 		return fmt.Errorf("failed to get LLM provider: %w", err)
 	}
@@ -145,7 +142,7 @@ func (p *Personalizer) PersonalizeWithCustomPrompt(ctx context.Context, msg *mod
 				msg.Text = body
 			}
 		}
-	}
+	}*/
 
 	return nil
 }

@@ -5,7 +5,6 @@ go 1.23.0
 toolchain go1.23.1
 
 require (
-	blaster v0.0.0-20240616000000-000000000000
 	github.com/emersion/go-smtp v0.20.2
 	github.com/go-sql-driver/mysql v1.8.1
 	github.com/google/uuid v1.6.0
@@ -15,7 +14,6 @@ require (
 	google.golang.org/api v0.237.0
 )
 
-replace blaster => /Users/bea/dev/mednet/blaster
 
 require (
 	cloud.google.com/go/auth v0.16.2 // indirect
