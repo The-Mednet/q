@@ -22,7 +22,7 @@ ENV APP_HOME=/mednet/q
 WORKDIR $APP_HOME
 
 # Copy binary + env
-COPY --from=builder /mednet/q/relay.
+COPY --from=builder /mednet/q/relay .
 
 EXPOSE 8080
 EXPOSE 2025
