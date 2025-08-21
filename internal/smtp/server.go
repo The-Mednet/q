@@ -10,8 +10,8 @@ import (
 	"time"
 
 	"relay/internal/config"
-	"relay/internal/gmail"
 	"relay/internal/queue"
+	"relay/internal/workspace"
 	"relay/pkg/models"
 
 	"github.com/emersion/go-smtp"
@@ -19,20 +19,20 @@ import (
 )
 
 type Server struct {
-	config *config.SMTPConfig
-	queue  queue.Queue
-	router *gmail.WorkspaceRouter
-	server *smtp.Server
+	config           *config.SMTPConfig
+	queue            queue.Queue
+	workspaceManager *workspace.Manager
+	server           *smtp.Server
 }
 
-func NewServer(cfg *config.SMTPConfig, q queue.Queue, router *gmail.WorkspaceRouter) *Server {
+func NewServer(cfg *config.SMTPConfig, q queue.Queue, workspaceManager *workspace.Manager) *Server {
 	s := &Server{
-		config: cfg,
-		queue:  q,
-		router: router,
+		config:           cfg,
+		queue:            q,
+		workspaceManager: workspaceManager,
 	}
 
-	backend := &Backend{queue: q, router: router}
+	backend := &Backend{queue: q, workspaceManager: workspaceManager}
 
 	server := smtp.NewServer(backend)
 	server.Addr = fmt.Sprintf("%s:%d", cfg.Host, cfg.Port)
@@ -57,20 +57,20 @@ func (s *Server) Stop() error {
 }
 
 type Backend struct {
-	queue  queue.Queue
-	router *gmail.WorkspaceRouter
+	queue            queue.Queue
+	workspaceManager *workspace.Manager
 }
 
 func (b *Backend) NewSession(_ *smtp.Conn) (smtp.Session, error) {
-	return &Session{queue: b.queue, router: b.router}, nil
+	return &Session{queue: b.queue, workspaceManager: b.workspaceManager}, nil
 }
 
 type Session struct {
-	queue   queue.Queue
-	router  *gmail.WorkspaceRouter
-	from    string
-	to      []string
-	message *models.Message
+	queue            queue.Queue
+	workspaceManager *workspace.Manager
+	from             string
+	to               []string
+	message          *models.Message
 }
 
 func (s *Session) AuthPlain(username, password string) error {
@@ -82,8 +82,8 @@ func (s *Session) Mail(from string, opts *smtp.MailOptions) error {
 
 	// Determine workspace for this sender
 	var workspaceID string
-	if s.router != nil {
-		if workspace, err := s.router.RouteMessage(from); err == nil {
+	if s.workspaceManager != nil {
+		if workspace, err := s.workspaceManager.GetWorkspaceForSender(from); err == nil {
 			workspaceID = workspace.ID
 		} else {
 			log.Printf("Warning: Could not route message from %s: %v", from, err)
@@ -174,7 +174,9 @@ func (s *Session) parseMessage(data []byte) error {
 				case "x-user-id":
 					s.message.UserID = value
 				default:
-					s.message.Headers[key] = value
+					// Apply header modifications based on workspace provider
+					modifiedValue := s.modifyHeaderForProvider(key, value)
+					s.message.Headers[key] = modifiedValue
 
 					// Extract recipient metadata from X-Recipient-* headers
 					if strings.HasPrefix(strings.ToLower(key), "x-recipient-") {
@@ -217,7 +219,185 @@ func (s *Session) parseMessage(data []byte) error {
 		s.message.Text = bodyContent
 	}
 
+	// Add any missing headers defined in workspace rewrite rules
+	s.addMissingHeaders()
+
 	return nil
+}
+
+// modifyHeaderForProvider modifies headers based on the workspace provider type
+func (s *Session) modifyHeaderForProvider(headerName, headerValue string) string {
+	log.Printf("DEBUG: modifyHeaderForProvider called: header='%s', value='%s'", headerName, headerValue)
+
+	// Only modify if we have a workspace ID and workspace manager
+	if s.message == nil {
+		log.Printf("DEBUG: s.message is nil, returning original value")
+		return headerValue
+	}
+	if s.message.WorkspaceID == "" {
+		log.Printf("DEBUG: s.message.WorkspaceID is empty, returning original value")
+		return headerValue
+	}
+	if s.workspaceManager == nil {
+		log.Printf("DEBUG: s.workspaceManager is nil, returning original value")
+		return headerValue
+	}
+
+	log.Printf("DEBUG: Getting workspace for sender: %s", s.from)
+
+	// Get workspace configuration to determine provider type
+	workspace, err := s.workspaceManager.GetWorkspaceForSender(s.from)
+	if err != nil {
+		// If we can't determine workspace, return original value
+		log.Printf("DEBUG: Could not get workspace for sender %s: %v", s.from, err)
+		return headerValue
+	}
+
+	log.Printf("DEBUG: Found workspace: ID='%s', Domain='%s', HasMailgun=%v",
+		workspace.ID, workspace.Domain, workspace.Mailgun != nil)
+
+	// Apply header rewriting rules for any header type
+	return s.applyHeaderRewriteRules(headerName, headerValue, workspace)
+}
+
+// applyHeaderRewriteRules applies configured header rewrite rules for a workspace
+func (s *Session) applyHeaderRewriteRules(headerName, headerValue string, workspace *config.WorkspaceConfig) string {
+	log.Printf("DEBUG: applyHeaderRewriteRules called: header='%s', value='%s', workspace='%s'", headerName, headerValue, workspace.ID)
+
+	// Check if this workspace uses Mailgun with header rewriting enabled
+	if workspace.Mailgun == nil || !workspace.Mailgun.Enabled {
+		log.Printf("DEBUG: Workspace %s doesn't have Mailgun enabled, returning original value", workspace.ID)
+		return headerValue // Not a Mailgun workspace
+	}
+
+	log.Printf("DEBUG: Workspace %s has Mailgun enabled, checking header rewrite", workspace.ID)
+
+	if !workspace.Mailgun.HeaderRewrite.Enabled {
+		log.Printf("DEBUG: Header rewrite not enabled for workspace %s, applying default behavior", workspace.ID)
+		// Apply default behavior for Mailgun workspaces without custom rules
+		return s.applyDefaultMailgunHeaderRewrite(headerName, headerValue, workspace)
+	}
+
+	log.Printf("DEBUG: Header rewrite enabled for workspace %s, checking %d rules", workspace.ID, len(workspace.Mailgun.HeaderRewrite.Rules))
+
+	// Apply configured rewrite rules - replace entire header value
+	for i, rule := range workspace.Mailgun.HeaderRewrite.Rules {
+		log.Printf("DEBUG: Checking rule %d: header_name='%s', new_value='%s'", i, rule.HeaderName, rule.NewValue)
+		if strings.EqualFold(rule.HeaderName, headerName) {
+			if rule.NewValue != "" {
+				log.Printf("DEBUG: Rule %d matched! Replacing header %s in workspace %s: %s -> %s",
+					i, headerName, workspace.ID, headerValue, rule.NewValue)
+				return rule.NewValue
+			}
+		}
+	}
+
+	log.Printf("DEBUG: No matching rule found for header %s, returning original value", headerName)
+	// No matching rule found, return original value
+	return headerValue
+}
+
+// applyDefaultMailgunHeaderRewrite applies default header rewriting for Mailgun workspaces
+func (s *Session) applyDefaultMailgunHeaderRewrite(headerName, headerValue string, workspace *config.WorkspaceConfig) string {
+	if strings.ToLower(headerName) != "list-unsubscribe" {
+		return headerValue
+	}
+
+	// Default behavior: Replace common Mandrill patterns with Mailgun equivalents
+	modifiedValue := headerValue
+
+	// Replace Mandrill domains with Mailgun equivalents
+	if strings.Contains(headerValue, "mandrillapp.com") {
+		// Extract the domain from workspace config
+		domain := workspace.Domain
+		if domain == "" && workspace.Mailgun != nil {
+			domain = workspace.Mailgun.Domain
+		}
+
+		// Replace Mandrill URL with Mailgun-compatible URL
+		modifiedValue = strings.ReplaceAll(headerValue, "mandrillapp.com", domain)
+		log.Printf("Applied default Mailgun header rewrite for workspace %s: %s -> %s",
+			workspace.ID, headerValue, modifiedValue)
+	}
+
+	return modifiedValue
+}
+
+// addMissingHeaders adds headers defined in rewrite rules that don't exist in the message
+func (s *Session) addMissingHeaders() {
+	log.Printf("DEBUG: addMissingHeaders called")
+
+	if s.message == nil {
+		log.Printf("DEBUG: s.message is nil, skipping addMissingHeaders")
+		return
+	}
+	if s.message.WorkspaceID == "" {
+		log.Printf("DEBUG: s.message.WorkspaceID is empty, skipping addMissingHeaders")
+		return
+	}
+	if s.workspaceManager == nil {
+		log.Printf("DEBUG: s.workspaceManager is nil, skipping addMissingHeaders")
+		return
+	}
+
+	log.Printf("DEBUG: Getting workspace for sender: %s", s.from)
+
+	// Get workspace configuration
+	workspace, err := s.workspaceManager.GetWorkspaceForSender(s.from)
+	if err != nil {
+		log.Printf("DEBUG: Could not get workspace for sender %s: %v", s.from, err)
+		return
+	}
+
+	log.Printf("DEBUG: Found workspace: ID='%s', Domain='%s', HasMailgun=%v",
+		workspace.ID, workspace.Domain, workspace.Mailgun != nil)
+
+	// Only process Mailgun workspaces with header rewriting enabled
+	if workspace.Mailgun == nil || !workspace.Mailgun.Enabled {
+		log.Printf("DEBUG: Workspace %s doesn't have Mailgun enabled, skipping addMissingHeaders", workspace.ID)
+		return
+	}
+
+	if !workspace.Mailgun.HeaderRewrite.Enabled {
+		log.Printf("DEBUG: Header rewrite not enabled for workspace %s, skipping addMissingHeaders", workspace.ID)
+		return
+	}
+
+	log.Printf("DEBUG: Processing %d header rewrite rules for workspace %s", len(workspace.Mailgun.HeaderRewrite.Rules), workspace.ID)
+
+	// Check each rewrite rule to see if the header exists
+	for i, rule := range workspace.Mailgun.HeaderRewrite.Rules {
+		log.Printf("DEBUG: Processing rule %d: header_name='%s', new_value='%s'", i, rule.HeaderName, rule.NewValue)
+
+		if rule.HeaderName == "" || rule.NewValue == "" {
+			log.Printf("DEBUG: Rule %d has empty header_name or new_value, skipping", i)
+			continue
+		}
+
+		// Check if header already exists (case-insensitive)
+		headerExists := false
+		for existingHeaderName := range s.message.Headers {
+			if strings.EqualFold(existingHeaderName, rule.HeaderName) {
+				log.Printf("DEBUG: Header %s already exists as %s, skipping", rule.HeaderName, existingHeaderName)
+				headerExists = true
+				break
+			}
+		}
+
+		// If header doesn't exist, add it
+		if !headerExists {
+			log.Printf("DEBUG: Adding missing header %s with value: %s", rule.HeaderName, rule.NewValue)
+			s.message.Headers[rule.HeaderName] = rule.NewValue
+			log.Printf("Added missing header %s to workspace %s: %s",
+				rule.HeaderName, workspace.ID, rule.NewValue)
+		}
+	}
+
+	headerNames := make([]string, 0, len(s.message.Headers))
+	for headerName := range s.message.Headers {
+		headerNames = append(headerNames, headerName)
+	}
+	log.Printf("DEBUG: addMissingHeaders completed, message now has %d headers: %s", len(s.message.Headers), strings.Join(headerNames, ", "))
 }
 
 func parseAddresses(addresses string) []string {

@@ -211,11 +211,7 @@ func (mc *MailgunClient) sendMessageInternal(ctx context.Context, msg *models.Me
 		// form.Set("h:List-Unsubscribe", "<https://your-domain.com/unsubscribe?email=%recipient%>")
 	}
 
-	// Add tags
-	tags := mc.buildTags(msg)
-	for _, tag := range tags {
-		form.Add("o:tag", tag)
-	}
+	// Skip adding tags - user preference to not include Mailgun tags
 
 	// Add custom variables for tracking
 	if msg.CampaignID != "" {
@@ -232,6 +228,24 @@ func (mc *MailgunClient) sendMessageInternal(ctx context.Context, msg *models.Me
 	for key, value := range msg.Metadata {
 		if strValue, ok := value.(string); ok {
 			form.Set(fmt.Sprintf("v:%s", key), strValue)
+		}
+	}
+
+	// Add custom headers from message
+	if len(msg.Headers) > 0 {
+		log.Printf("DEBUG: Gateway Mailgun processing %d headers for message %s", len(msg.Headers), msg.ID)
+		for headerName, headerValue := range msg.Headers {
+			// Skip headers that Mailgun handles separately to avoid RFC 5322 violations
+			headerLower := strings.ToLower(headerName)
+			switch headerLower {
+			case "content-type", "to", "from", "subject", "cc", "bcc", "date", "message-id":
+				log.Printf("DEBUG: Gateway skipping standard email header: %s", headerName)
+				continue
+			}
+			
+			// Add as custom header with h: prefix for Mailgun
+			form.Set(fmt.Sprintf("h:%s", headerName), headerValue)
+			log.Printf("Gateway added custom header %s: %s for Mailgun domain %s", headerName, headerValue, mc.domain)
 		}
 	}
 
@@ -309,30 +323,6 @@ func (mc *MailgunClient) formatFromAddress(msg *models.Message) string {
 	return rewrittenFrom
 }
 
-// buildTags creates tags for the message
-func (mc *MailgunClient) buildTags(msg *models.Message) []string {
-	tags := make([]string, 0)
-
-	// Add default tags
-	tags = append(tags, mc.config.Tags.Default...)
-
-	// Add campaign tag if enabled and available
-	if mc.config.Tags.CampaignTagEnabled && msg.CampaignID != "" {
-		tags = append(tags, fmt.Sprintf("campaign:%s", msg.CampaignID))
-	}
-
-	// Add user tag if enabled and available
-	if mc.config.Tags.UserTagEnabled && msg.UserID != "" {
-		tags = append(tags, fmt.Sprintf("user:%s", msg.UserID))
-	}
-
-	// Add workspace tag
-	if msg.WorkspaceID != "" {
-		tags = append(tags, fmt.Sprintf("workspace:%s", msg.WorkspaceID))
-	}
-
-	return tags
-}
 
 // GetType implements GatewayInterface.GetType
 func (mc *MailgunClient) GetType() gateway.GatewayType {

@@ -158,8 +158,8 @@ func main() {
 		webhookClient, personalizer, recipientService,
 	)
 
-	// For SMTP server, we no longer need the workspace router since the unified processor handles routing
-	smtpServer := smtp.NewServer(&cfg.SMTP, q, nil)
+	// SMTP server needs workspace manager for header rewriting
+	smtpServer := smtp.NewServer(&cfg.SMTP, q, workspaceManager)
 	
 	// For WebUI server, create a compatibility processor interface  
 	legacyProcessor := &LegacyProcessorAdapter{unifiedProcessor: unifiedProcessor}

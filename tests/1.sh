@@ -5,6 +5,6 @@ python tests/test_smtp.py \
     --to "Dr. Brian Adams <b@smada.org>" \
     --campaign 123 \
     --user 60952 \
-    --subject "Get Expert Answers to Complex Clinical Questions" \
+    --subject "$1" \
     --file tests/1.txt
 

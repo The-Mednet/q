@@ -129,11 +129,7 @@ func (m *MailgunProvider) SendMessage(ctx context.Context, msg *models.Message) 
 	// Add tracking settings
 	m.addTrackingSettings(&form)
 	
-	// Add tags
-	tags := m.buildTags(msg)
-	for _, tag := range tags {
-		form.Add("o:tag", tag)
-	}
+	// Skip adding tags - user preference to not include Mailgun tags
 	
 	// Add custom variables for tracking
 	if msg.CampaignID != "" {
@@ -156,6 +152,29 @@ func (m *MailgunProvider) SendMessage(ctx context.Context, msg *models.Message) 
 				form.Set(fmt.Sprintf("v:%s", key), strValue)
 			}
 		}
+	}
+	
+	// Add custom headers from message
+	log.Printf("DEBUG: Mailgun provider processing headers for message %s", msg.ID)
+	if len(msg.Headers) > 0 {
+		log.Printf("DEBUG: Message has %d headers to process", len(msg.Headers))
+		for headerName, headerValue := range msg.Headers {
+			log.Printf("DEBUG: Processing header: %s = %s", headerName, headerValue)
+			
+			// Skip headers that Mailgun handles separately to avoid RFC 5322 violations
+			headerLower := strings.ToLower(headerName)
+			switch headerLower {
+			case "content-type", "to", "from", "subject", "cc", "bcc", "date", "message-id":
+				log.Printf("DEBUG: Skipping standard email header: %s", headerName)
+				continue
+			}
+			
+			// Add as custom header with h: prefix for Mailgun
+			form.Set(fmt.Sprintf("h:%s", headerName), headerValue)
+			log.Printf("Added custom header %s: %s for Mailgun domain %s", headerName, headerValue, m.config.Domain)
+		}
+	} else {
+		log.Printf("DEBUG: Message has no headers to process (msg.Headers is nil or empty)")
 	}
 	
 	// Send the request
@@ -274,35 +293,6 @@ func (m *MailgunProvider) addTrackingSettings(form *url.Values) {
 	}
 }
 
-// buildTags creates tags for the message
-func (m *MailgunProvider) buildTags(msg *models.Message) []string {
-	tags := make([]string, 0)
-	
-	// Add default tags
-	if m.config.Tags != nil {
-		tags = append(tags, m.config.Tags...)
-	}
-	
-	// Add campaign tag if available
-	if msg.CampaignID != "" {
-		tags = append(tags, fmt.Sprintf("campaign:%s", msg.CampaignID))
-	}
-	
-	// Add user tag if available
-	if msg.UserID != "" {
-		tags = append(tags, fmt.Sprintf("user:%s", msg.UserID))
-	}
-	
-	// Add workspace tag
-	if msg.WorkspaceID != "" {
-		tags = append(tags, fmt.Sprintf("workspace:%s", msg.WorkspaceID))
-	}
-	
-	// Add provider tag
-	tags = append(tags, "provider:mailgun")
-	
-	return tags
-}
 
 // GetType implements Provider.GetType
 func (m *MailgunProvider) GetType() ProviderType {

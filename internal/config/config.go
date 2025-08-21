@@ -33,13 +33,14 @@ type WorkspaceGmailConfig struct {
 
 // WorkspaceMailgunConfig contains Mailgun-specific settings for a workspace
 type WorkspaceMailgunConfig struct {
-	APIKey   string                   `json:"api_key"`
-	Domain   string                   `json:"domain"`
-	BaseURL  string                   `json:"base_url,omitempty"`
-	Region   string                   `json:"region,omitempty"`
-	Enabled  bool                     `json:"enabled"`
-	Tracking WorkspaceMailgunTracking `json:"tracking,omitempty"`
-	Tags     []string                 `json:"default_tags,omitempty"`
+	APIKey        string                        `json:"api_key"`
+	Domain        string                        `json:"domain"`
+	BaseURL       string                        `json:"base_url,omitempty"`
+	Region        string                        `json:"region,omitempty"`
+	Enabled       bool                          `json:"enabled"`
+	Tracking      WorkspaceMailgunTracking      `json:"tracking,omitempty"`
+	Tags          []string                      `json:"default_tags,omitempty"`
+	HeaderRewrite WorkspaceMailgunHeaderRewrite `json:"header_rewrite,omitempty"`
 }
 
 // WorkspaceMailgunTracking configures Mailgun tracking for a workspace
@@ -47,6 +48,18 @@ type WorkspaceMailgunTracking struct {
 	Opens       bool `json:"opens"`
 	Clicks      bool `json:"clicks"`
 	Unsubscribe bool `json:"unsubscribe"`
+}
+
+// WorkspaceMailgunHeaderRewrite configures header rewriting for Mailgun workspaces
+type WorkspaceMailgunHeaderRewrite struct {
+	Enabled bool                           `json:"enabled"`
+	Rules   []WorkspaceHeaderRewriteRule   `json:"rules,omitempty"`
+}
+
+// WorkspaceHeaderRewriteRule defines a header rewriting rule
+type WorkspaceHeaderRewriteRule struct {
+	HeaderName string `json:"header_name"` // e.g., "List-Unsubscribe"
+	NewValue   string `json:"new_value"`   // new header value to replace the original
 }
 
 type WorkspaceRateLimitConfig struct {
