@@ -37,7 +37,8 @@ jobs:
         uses: aws-actions/amazon-ecr-login@v1
 
       - name: Determine next image tag
-        id: tag run: |
+        id: tag 
+        run: |
           # Get all numeric tags, sort them, and get the highest one
           latest=$(aws ecr describe-images \
             --repository-name "${{ env.ECR_REPOSITORY }}" \
