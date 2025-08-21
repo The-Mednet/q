@@ -1,0 +1,114 @@
+name: q docker image build and publish
+
+permissions:
+  contents: write  # needed to push git tag
+  id-token: write
+
+on:
+  workflow_dispatch:
+
+env:
+  AWS_REGION: us-east-1
+  GITHUB_IAM_ROLE: GithubBuilderRole
+  AWS_ROLE_ARN: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/GithubBuilderRole
+  ECR_REGISTRY: ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.us-east-1.amazonaws.com
+  ECR_REPOSITORY: mednet-q
+  DOCKER_BUILD_DIR: ./docker
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-region: ${{ env.AWS_REGION }}
+          role-to-assume: ${{ env.AWS_ROLE_ARN }}
+          audience: sts.amazonaws.com
+          role-session-name: github-actions
+
+      - name: Login to ECR
+        uses: aws-actions/amazon-ecr-login@v1
+
+      - name: Determine next image tag
+        id: tag run: |
+          # Get all numeric tags, sort them, and get the highest one
+          latest=$(aws ecr describe-images \
+            --repository-name "${{ env.ECR_REPOSITORY }}" \
+            --region "${{ env.AWS_REGION }}" \
+            --query 'imageDetails[].imageTags[]' \
+            --output text 2>/dev/null | \
+            tr '\t' '\n' | \
+            grep '^[0-9]\+$' | \
+            sort -n | \
+            tail -1 || echo "None")
+          
+          echo "Latest numeric tag from ECR: $latest"
+          
+          # Handle various cases for empty/missing tags
+          if [[ "$latest" == "None" || "$latest" == "null" || -z "$latest" ]]; then
+            next=1
+          else
+            # Clean the tag value (remove any whitespace/newlines)
+            latest=$(echo "$latest" | tr -d '\n\r\t ')
+            # Ensure the tag is numeric before incrementing
+            if [[ "$latest" =~ ^[0-9]+$ ]]; then
+              next=$((latest + 1))
+            else
+              # If tag is not numeric, start from 1
+              echo "Warning: Latest tag '$latest' is not numeric, starting from 1"
+              next=1
+            fi
+          fi
+          echo "Next tag will be: $next"
+          echo "new_tag=$next" >> "$GITHUB_OUTPUT"
+
+      - name: Build, tag, and push
+        id: build_and_push
+        run: |
+          # Ensure we have a tag, fallback to timestamp if needed
+          TAG="${{ steps.tag.outputs.new_tag }}"
+          if [[ -z "$TAG" ]]; then
+            echo "Warning: No tag found, using timestamp fallback"
+            TAG=$(date +%s)
+          fi
+          
+          IMAGE="${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:$TAG"
+          echo "Building $IMAGE"
+          
+          # Verify image string is complete
+          if [[ "$IMAGE" == *":" && "${IMAGE}" == *"::" ]]; then
+            echo "Error: Invalid image tag format: $IMAGE"
+            exit 1
+          fi
+          
+          DOCKER_BUILDKIT=1 docker build \
+            --file "${{ env.DOCKER_BUILD_DIR }}/Dockerfile" \
+            --platform=linux/amd64 \
+            -t "$IMAGE" \
+            .                              # <-- context is repo root
+          echo "Pushing $IMAGE"
+          docker push "$IMAGE"
+          echo "full_image=$IMAGE" >> "$GITHUB_OUTPUT"
+
+      - name: Output pushed image
+        run: echo "::notice::Published image ${{ steps.build_and_push.outputs.full_image }}"
+
+      - name: Push git tag
+        run: |
+          git tag ${{ steps.tag.outputs.new_tag }}
+          git push origin ${{ steps.tag.outputs.new_tag }}
+
+      - name: Notify build success
+        if: success()
+        run: echo "q build succeeded"
+
+      - name: Notify build failure
+        if: failure()
+        run: echo "q build failed. Check the logs for details."
