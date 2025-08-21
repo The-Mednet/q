@@ -1,30 +1,34 @@
 # SMTP Relay Service - Development Guide
 
 ## Project Overview
-This is an SMTP relay service that acts as a drop-in replacement for Mandrill, with Google Workspace integration and optional LLM-powered email personalization. Built for Mednet's email infrastructure needs.
+This is an SMTP relay service that acts as a drop-in replacement for Mandrill, with unified multi-provider support for Gmail and Mailgun, plus optional LLM-powered email personalization. Built for Mednet's email infrastructure needs.
 
 ## Technology Stack
 - **Language**: Go 1.23
 - **Database**: MySQL (primary), Redis (potential), DynamoDB (potential)
-- **Email**: Gmail API via Google Workspace OAuth
+- **Email Providers**: Gmail API (service account), Mailgun API
 - **LLM**: OpenAI/Azure OpenAI/Groq for email personalization
 - **Monitoring**: New Relic integration (via blaster module)
-- **Queue**: MySQL-backed with in-memory fallback
+- **Queue**: MySQL-backed with unified rate limiting
 - **Web UI**: Vanilla JS with REST API
 
 ## Architecture
 - **SMTP Server**: Port 2525, handles incoming emails
-- **Queue System**: MySQL persistence with rate limiting (2000/day)
-- **Processor**: Background worker for email sending
+- **Unified Provider System**: Gmail and Mailgun providers with shared interfaces
+- **Workspace Router**: Domain-based routing to appropriate providers
+- **Queue System**: MySQL persistence with per-workspace rate limiting
+- **Processor**: Background worker supporting multiple providers
 - **Web UI**: Management dashboard on port 8080
 - **Webhooks**: Mandrill-compatible event notifications
+- **Recipient Tracking**: MySQL-based delivery tracking system
 
 ## Key Dependencies
 - `blaster` - Internal Mednet module (local replacement at `/Users/bea/dev/mednet/blaster`)
 - `github.com/emersion/go-smtp` - SMTP server implementation
 - `github.com/go-sql-driver/mysql` - MySQL driver
 - `google.golang.org/api` - Gmail API client
-- `golang.org/x/oauth2` - OAuth2 flow
+- `golang.org/x/oauth2` - OAuth2 flow for Gmail service accounts
+- `github.com/mailgun/mailgun-go/v4` - Mailgun API client
 
 ## Development Commands
 
@@ -64,10 +68,57 @@ make docker-setup   # Docker setup
 ```
 
 ## Configuration
+
+### Workspace Configuration
+The service uses a unified workspace configuration system supporting multiple email providers:
+
+#### File-based Configuration (`workspace.json`)
+```json
+[
+  {
+    "id": "gmail-workspace",
+    "domain": "yourdomain.com",
+    "display_name": "Gmail Workspace",
+    "rate_limits": {
+      "workspace_daily": 2000,
+      "per_user_daily": 100,
+      "custom_user_limits": {
+        "vip@yourdomain.com": 5000
+      }
+    },
+    "gmail": {
+      "service_account_file": "credentials/service-account.json",
+      "enabled": true,
+      "default_sender": "noreply@yourdomain.com"
+    }
+  },
+  {
+    "id": "mailgun-workspace", 
+    "domain": "mail.yourdomain.com",
+    "display_name": "Mailgun Workspace",
+    "rate_limits": {
+      "workspace_daily": 10000,
+      "per_user_daily": 500
+    },
+    "mailgun": {
+      "api_key": "your-mailgun-api-key",
+      "domain": "mail.yourdomain.com",
+      "base_url": "https://api.mailgun.net/v3",
+      "enabled": true,
+      "tracking": {
+        "opens": true,
+        "clicks": true
+      }
+    }
+  }
+]
+```
+
+#### Environment Variables
 - Uses `.env` file for configuration (following Mednet standard)
-- OAuth credentials in `credentials/` directory
+- Service account credentials in `credentials/` directory  
 - Supports both local MySQL and Docker MySQL
-- Rate limiting enforced for Gmail API (2000 emails/24h)
+- Production: `WORKSPACES_JSON` environment variable for AWS Secrets Manager integration
 
 ## Testing Strategy
 - Run `go test ./...` for unit tests
@@ -87,10 +138,13 @@ make docker-setup   # Docker setup
 ```
 cmd/server/          # Main application entry
 internal/
-  ├── config/        # Configuration management  
-  ├── gmail/         # Google Workspace integration
+  ├── config/        # Configuration management & workspace loading
+  ├── provider/      # Unified provider system (Gmail, Mailgun)
+  ├── workspace/     # Workspace management and routing  
+  ├── recipient/     # Recipient tracking system
+  ├── gateway/       # Legacy gateway integration (migration)
   ├── llm/           # LLM personalization
-  ├── processor/     # Queue processing logic
+  ├── processor/     # Unified queue processing logic
   ├── queue/         # Queue implementations (MySQL/memory)
   ├── smtp/          # SMTP server
   ├── webhook/       # Mandrill webhook compatibility
@@ -98,16 +152,41 @@ internal/
 pkg/models/          # Shared data models
 static/              # Web UI assets (JS/CSS)
 schema.sql           # MySQL database schema
+workspace.json       # Workspace configuration
 ```
 
 ## Git Integration
-- Project is not currently in git - consider initializing with `git init`
+- Project uses git with recent commits including unified provider architecture
 - Should be added to https://github.com/The-Mednet organization
 - Follow Mednet's git workflow and commit standards
 
-## Notes
-- No git repository initialized yet
-- Uses local `blaster` module dependency
-- MySQL tables need to be initialized before first run
-- OAuth flow required for Gmail integration
-- LLM features are optional but add significant value
+## Provider System
+
+### Gmail Provider
+- Uses Google Workspace service account authentication  
+- Supports domain-wide delegation for impersonation
+- Rate limited to 2000 emails/24h per workspace
+- Requires `gmail.send` scope
+- Health checks validate OAuth2 token generation
+
+### Mailgun Provider  
+- Uses Mailgun API with domain verification
+- Supports tracking for opens, clicks, unsubscribes
+- Higher rate limits than Gmail
+- Built-in domain rewriting for flexible sender addresses
+
+### Workspace Routing
+- Automatic provider selection based on sender domain
+- Domain mapping: `user@domain.com` → appropriate workspace
+- Unified rate limiting across all providers in workspace
+- Per-user rate limits with custom overrides
+
+## Key Features
+- **Multi-Provider**: Unified interface for Gmail and Mailgun
+- **Domain Routing**: Automatic workspace selection
+- **Rate Limiting**: Per-workspace and per-user limits
+- **Health Monitoring**: Real-time provider status
+- **Recipient Tracking**: MySQL-based delivery tracking
+- **Environment Config**: AWS Secrets Manager integration
+- **Defensive Programming**: Comprehensive error handling
+- **LLM Integration**: Optional email personalization

@@ -1,30 +1,20 @@
 # SMTP Relay Service
 
-A Go-based SMTP relay service that acts as a drop-in replacement for Mandrill, with Google Workspace integration and optional LLM-powered email personalization.
-
-## Domains
-
-- mednetmail.
-- joinmednet.
-- mednetinvite.
-- mednetoffer.
-- trymednet.
-- mednetalumni.
-- answerdrquestion.
-- mednetsearch.
-
+A Go-based SMTP relay service that acts as a drop-in replacement for Mandrill, with multi-provider support for Gmail, Mailgun, and optional LLM-powered email personalization.
 
 ## Features
 
-- **SMTP Server**: Listens for incoming emails on a configurable port
-- **MySQL Queue**: Persists messages in MySQL for reliable processing
+- **Multi-Provider Support**: Unified workspace configuration supporting Gmail and Mailgun
+- **SMTP Server**: Listens for incoming emails on port 2525
+- **MySQL Queue**: Persists messages in MySQL for reliable processing with rate limiting
 - **Web UI**: Dashboard to visualize and manage the email queue
-- **Google Workspace Integration**: Send emails through your Google Workspace account
+- **Google Workspace Integration**: Send emails through Gmail API with service account delegation
+- **Mailgun Integration**: Send emails through Mailgun API with tracking and analytics
 - **Mandrill Webhooks**: Compatible with Mandrill webhook events
 - **LLM Personalization**: Optional AI-powered email personalization using OpenAI, Azure OpenAI, or Groq
-- **Configurable Processing**: Batch processing with retry logic
-- **Rate Limiting**: Enforces Google Workspace's 2000 emails per rolling 24-hour period
-- **Manual Processing**: Trigger queue processing via API or web UI
+- **Domain-Based Routing**: Automatic workspace selection based on sender domain
+- **Unified Rate Limiting**: Per-workspace and per-user rate limits across all providers
+- **Recipient Tracking**: MySQL-based recipient management with delivery tracking
 
 ### Mandrill Webhook Events
 
@@ -52,53 +42,68 @@ Webhook Format:
 
 ## Prerequisites
 
-- Go 1.21 or later
+- Go 1.23 or later
 - MySQL 5.7 or later
-- Google Workspace account with OAuth credentials
+- Google Workspace with service account (for Gmail)
+- Mailgun account (for Mailgun)
 - (Optional) OpenAI API key for LLM features
 
-## Setup
+## Quick Start
 
-### 1. Clone and Install Dependencies
-
-```bash
-git clone <repository-url>
-cd relay
-go mod download
-```
-
-### 2. Set Up MySQL Database
-
-Create the database and tables:
+### 1. Setup and Build
 
 ```bash
-mysql -u root -p < schema.sql
+make setup        # Install dependencies and setup database
+make build        # Build the binary
+make run          # Run the service
 ```
 
-### 3. Configure Google Workspace OAuth
+### 2. Workspace Configuration
 
-1. Go to [Google Cloud Console](https://console.cloud.google.com/)
-2. Create a new project or select existing
-3. Enable Gmail API
-4. Create OAuth 2.0 credentials
-5. Download credentials as `credentials.json`
-6. Place in project root
+The service uses a unified workspace configuration system. Create `workspace.json`:
 
-### 4. Environment Configuration
-
-Copy the example environment file:
-
-```bash
-cp .env.example .env
+```json
+[
+  {
+    "id": "gmail-primary",
+    "domain": "yourdomain.com",
+    "display_name": "Primary Gmail Workspace",
+    "rate_limits": {
+      "workspace_daily": 2000,
+      "per_user_daily": 100
+    },
+    "gmail": {
+      "service_account_file": "credentials/service-account.json",
+      "enabled": true,
+      "default_sender": "noreply@yourdomain.com"
+    }
+  },
+  {
+    "id": "mailgun-primary",
+    "domain": "mail.yourdomain.com",
+    "display_name": "Mailgun Workspace",
+    "rate_limits": {
+      "workspace_daily": 10000,
+      "per_user_daily": 500
+    },
+    "mailgun": {
+      "api_key": "your-mailgun-api-key",
+      "domain": "mail.yourdomain.com",
+      "base_url": "https://api.mailgun.net/v3",
+      "region": "us",
+      "enabled": true,
+      "tracking": {
+        "opens": true,
+        "clicks": true
+      }
+    }
+  }
+]
 ```
 
-Edit `.env` with your configuration:
+### 3. Environment Configuration
 
 ```env
-# SMTP Server
-SMTP_HOST=0.0.0.0
-SMTP_PORT=2525
-
 # MySQL Database
 MYSQL_HOST=localhost
 MYSQL_PORT=3306
@@ -106,45 +111,49 @@ MYSQL_USER=root
 MYSQL_PASSWORD=your-password
 MYSQL_DATABASE=relay
 
-# Gmail Settings
-GMAIL_SENDER_EMAIL=your-email@example.com
+# SMTP Server
+SMTP_HOST=0.0.0.0
+SMTP_PORT=2525
 
 # Web UI
 WEB_UI_PORT=8080
 
-# Optional: Mandrill Webhooks
-MANDRILL_WEBHOOK_URL=https://your-webhook-url.com
-
-# Optional: LLM Settings
+# Optional: LLM Features
 LLM_ENABLED=true
-LLM_API_KEY=your-openai-api-key
-```
+OPENAI_API_KEY=your-openai-api-key
 
-## Running the Service
-
-### Development
-
-```bash
-go run cmd/server/main.go
-```
-
-### Production
-
-Build and run:
-
-```bash
-go build -o relay cmd/server/main.go
-./relay
+# Optional: Production workspace configuration
+WORKSPACES_JSON='[{"id":"workspace1",...}]'
 ```
 
 ## Usage
+
+### Workspace Selection
+
+The service automatically routes emails based on the sender domain:
+- Emails from `user@yourdomain.com` → Gmail workspace
+- Emails from `user@mail.yourdomain.com` → Mailgun workspace
 
 ### Sending Emails
 
 Configure your application to send emails to:
 - Host: `localhost` (or your server IP)
-- Port: `2525` (or your configured SMTP_PORT)
-- No authentication required (configurable)
+- Port: `2525`
+- No authentication required
+
+### Available Commands
+
+```bash
+make build        # Build the binary
+make run          # Run in development mode
+make test         # Run tests
+make lint         # Run linting
+make clean        # Clean build artifacts
+
+make docker-build # Build Docker image
+make docker-up    # Start with docker-compose
+make docker-down  # Stop docker-compose
+```
 
 ### Web UI
 
@@ -152,19 +161,28 @@ Access the dashboard at: `http://localhost:8080`
 
 Features:
 - Real-time queue statistics
+- Provider health monitoring
 - Message list with filtering
-- Message details viewer
-- Delete messages
-- Auto-refresh every 10 seconds
+- Workspace configuration display
+- Rate limit monitoring
 
 ### API Endpoints
 
-- `GET /api/messages` - List messages
+**Core APIs:**
+- `GET /api/messages` - List messages with filtering
 - `GET /api/messages/{id}` - Get message details
 - `DELETE /api/messages/{id}` - Delete message
 - `GET /api/stats` - Get queue statistics
-- `POST /api/process` - Manually trigger queue processing
-- `GET /api/rate-limit` - Get current rate limit status
+- `POST /api/process` - Manually trigger processing
+
+**Provider Management:**
+- `GET /api/providers` - List all providers and health status
+- `GET /api/providers/{id}/info` - Get provider details
+- `GET /api/workspaces` - List workspace configurations
+
+**Rate Limiting:**
+- `GET /api/rate-limit/{workspace}` - Get workspace rate limit status
+- `GET /api/rate-limit/{workspace}/{user}` - Get user rate limit status
 
 ### LLM Personalization
 
