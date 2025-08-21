@@ -12,7 +12,7 @@ RUN go mod download
 COPY . .
 
 # 3) Build your binary
-RUN go build -o relay cmd/server/main.go
+RUN go build -o relay ./cmd/server
 
 # Stage 2: Create the final minimal image
 FROM alpine:latest
