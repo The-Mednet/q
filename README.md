@@ -21,7 +21,7 @@ A Go-based SMTP relay service that acts as a drop-in replacement for Mandrill, w
 The service sends the following Mandrill-compatible webhook events:
 - `send` - When an email is successfully sent
 - `hard_bounce` - When an email permanently fails
-- `deferral` - When an email is temporarily deferred (e.g., OAuth error)
+- `deferral` - When an email is temporarily deferred (e.g., rate limiting, API error)
 - `reject` - When an email is rejected before sending
 
 Webhook Format:
@@ -221,7 +221,7 @@ graph TB
         QUEUE[(Message Queue<br/>MySQL/Memory)]
         PROCESSOR[Queue Processor]
         WEB_UI[Web UI<br/>:8080]
-        AUTH[OAuth Manager]
+        PROVIDER[Provider Router]
     end
     
     %% Main flow
@@ -234,8 +234,8 @@ graph TB
     
     %% Web UI interactions
     WEB_UI -->|Monitor| QUEUE
-    WEB_UI -->|OAuth Flow| AUTH
-    AUTH -->|Store Tokens| QUEUE
+    WEB_UI -->|Health Check| PROVIDER
+    PROVIDER -->|Route Messages| QUEUE
     
     %% Error handling
     GMAIL -.->|Auth Error| PROCESSOR
@@ -247,22 +247,24 @@ graph TB
     classDef storage fill:#fff3e0,stroke:#e65100,stroke-width:2px
     
     class SMTP_CLIENT,GMAIL,WEBHOOK,LLM external
-    class SMTP_SERVER,PROCESSOR,WEB_UI,AUTH internal
+    class SMTP_SERVER,PROCESSOR,WEB_UI,PROVIDER internal
     class QUEUE storage
 ```
 
 ### Data Flow
 
 1. **Email Reception**: External SMTP clients connect to port 2525 and submit emails
-2. **Queue Storage**: Messages are stored in MySQL (or in-memory) queue with metadata
-3. **Processing Loop**: Queue processor runs every 30 seconds (configurable) to:
+2. **Workspace Routing**: Provider router selects appropriate workspace based on sender domain
+3. **Queue Storage**: Messages are stored in MySQL queue with workspace metadata
+4. **Processing Loop**: Unified queue processor runs continuously to:
    - Dequeue messages in batches
+   - Check rate limits per workspace/user
    - Optionally personalize with LLM
-   - Send via Gmail API
+   - Send via Gmail API or Mailgun API
    - Call Mandrill webhooks
-   - Update message status
-4. **OAuth Management**: Web UI handles OAuth flow for Gmail authentication
-5. **Monitoring**: Web dashboard provides real-time queue visibility and management
+   - Update message status and recipient tracking
+5. **Health Monitoring**: Real-time provider health checks and status monitoring
+6. **Web Dashboard**: Real-time queue visibility, provider status, and workspace management
 
 ## Docker Support
 
@@ -274,21 +276,23 @@ cp .env.example .env
 # Edit .env with your settings
 ```
 
-2. **Add Google credentials**:
+2. **Add provider credentials**:
 ```bash
-# Place these files in the credentials/ directory:
-cp /path/to/credentials.json credentials/
-# token.json will be created after first OAuth flow
+# For Gmail: Place service account files in credentials/ directory:
+cp /path/to/service-account.json credentials/
+
+# For Mailgun: Update workspace.json with API keys
 ```
 
-3. **Start services**:
+3. **Configure workspaces**:
+```bash
+# Edit workspace.json with your domain and provider settings
+```
+
+4. **Start services**:
 ```bash
 docker-compose up -d
 ```
-
-4. **Initialize OAuth** (if not already done):
-- Visit http://localhost:8080
-- Click on any auth_error message to start OAuth flow
 
 ### Docker Commands
 
@@ -317,15 +321,22 @@ docker-compose -f docker-compose.yml -f docker-compose.dev.yml up
 All configuration can be set via environment variables in `.env` or docker-compose.yml:
 
 ```env
-# Gmail settings
-GMAIL_SENDER_EMAIL=your-email@example.com
-
-# MySQL password (optional, defaults provided)
-MYSQL_ROOT_PASSWORD=secure-password
+# MySQL Database
+MYSQL_HOST=localhost
+MYSQL_PORT=3306
+MYSQL_USER=root
 MYSQL_PASSWORD=secure-password
+MYSQL_DATABASE=relay
 
-# Rate limiting
-QUEUE_DAILY_RATE_LIMIT=2000
+# SMTP Server
+SMTP_HOST=0.0.0.0
+SMTP_PORT=2525
+
+# Web UI
+WEB_UI_PORT=8080
+
+# Workspace Configuration (optional - can use workspace.json file instead)
+WORKSPACES_JSON='[{"id":"workspace1","domain":"example.com",...}]'
 
 # LLM settings (optional)
 LLM_ENABLED=true
@@ -372,10 +383,17 @@ OPENAI_API_KEY=your-key
 - Check credentials in .env
 - Ensure database exists
 
-### Gmail Authentication
-- Run OAuth flow if token.json missing
-- Check credentials.json is valid
-- Verify Gmail API is enabled
+### Provider Authentication
+**Gmail Issues:**
+- Verify service account file exists in credentials/ directory
+- Check domain-wide delegation is configured in Google Admin Console
+- Ensure service account has 'https://www.googleapis.com/auth/gmail.send' scope
+- Verify sender email exists in Google Workspace
+
+**Mailgun Issues:**
+- Verify API key is correct in workspace.json
+- Check domain is verified in Mailgun dashboard
+- Ensure base_url matches your Mailgun region
 
 ## License
 
