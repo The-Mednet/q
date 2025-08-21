@@ -112,14 +112,24 @@ func (m *Manager) loadWorkspaces(configFile string) error {
 			hasEnabledProvider = true
 			
 			// Validate Gmail configuration
-			if workspace.Gmail.ServiceAccountFile == "" {
-				return fmt.Errorf("workspace %s has Gmail enabled but no service account file specified", workspace.ID)
+			if workspace.Gmail.ServiceAccountFile == "" && workspace.Gmail.ServiceAccountEnv == "" {
+				return fmt.Errorf("workspace %s has Gmail enabled but no service account file or env specified", workspace.ID)
 			}
 			
-			// Check if service account file exists
-			if _, err := os.Stat(workspace.Gmail.ServiceAccountFile); os.IsNotExist(err) {
-				log.Printf("Warning: Service account file for workspace %s does not exist: %s", 
-					workspace.ID, workspace.Gmail.ServiceAccountFile)
+			// Check if service account file exists (only if using file-based config)
+			if workspace.Gmail.ServiceAccountFile != "" {
+				if _, err := os.Stat(workspace.Gmail.ServiceAccountFile); os.IsNotExist(err) {
+					log.Printf("Warning: Service account file for workspace %s does not exist: %s", 
+						workspace.ID, workspace.Gmail.ServiceAccountFile)
+				}
+			}
+			
+			// Check if environment variable is set (only if using env-based config)
+			if workspace.Gmail.ServiceAccountEnv != "" {
+				if os.Getenv(workspace.Gmail.ServiceAccountEnv) == "" {
+					log.Printf("Warning: Service account env var %s for workspace %s is not set", 
+						workspace.Gmail.ServiceAccountEnv, workspace.ID)
+				}
 			}
 		}
 		
@@ -277,9 +287,23 @@ func (m *Manager) ValidateConfiguration() error {
 	for id, workspace := range m.workspaces {
 		// Check Gmail configuration
 		if workspace.Gmail != nil && workspace.Gmail.Enabled {
-			if _, err := os.Stat(workspace.Gmail.ServiceAccountFile); os.IsNotExist(err) {
-				return fmt.Errorf("workspace %s Gmail service account file does not exist: %s", 
-					id, workspace.Gmail.ServiceAccountFile)
+			// Check file-based config
+			if workspace.Gmail.ServiceAccountFile != "" {
+				if _, err := os.Stat(workspace.Gmail.ServiceAccountFile); os.IsNotExist(err) {
+					return fmt.Errorf("workspace %s Gmail service account file does not exist: %s", 
+						id, workspace.Gmail.ServiceAccountFile)
+				}
+			}
+			// Check env-based config
+			if workspace.Gmail.ServiceAccountEnv != "" {
+				if os.Getenv(workspace.Gmail.ServiceAccountEnv) == "" {
+					return fmt.Errorf("workspace %s Gmail service account env var %s is not set", 
+						id, workspace.Gmail.ServiceAccountEnv)
+				}
+			}
+			// Ensure at least one method is configured
+			if workspace.Gmail.ServiceAccountFile == "" && workspace.Gmail.ServiceAccountEnv == "" {
+				return fmt.Errorf("workspace %s has Gmail enabled but no service account configuration", id)
 			}
 		}
 		
