@@ -29,8 +29,9 @@ type Provider interface {
 type ProviderType string
 
 const (
-	ProviderTypeGmail   ProviderType = "gmail"
-	ProviderTypeMailgun ProviderType = "mailgun"
+	ProviderTypeGmail    ProviderType = "gmail"
+	ProviderTypeMailgun  ProviderType = "mailgun"
+	ProviderTypeMandrill ProviderType = "mandrill"
 )
 
 // ProviderInfo contains metadata about a provider

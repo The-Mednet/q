@@ -270,13 +270,13 @@ func loadLegacyWorkspaceConfig(filename string) (*EnhancedGatewayConfig, error) 
 				ID:          ws.ID,
 				Type:        gateway.GatewayTypeMailgun,
 				DisplayName: ws.DisplayName,
-				Domain:      ws.Domain,
+				Domain:      ws.GetPrimaryDomain(),
 				Enabled:     true,
 				Priority:    i + 1, // Convert index to priority
 				Weight:      100,
 				Mailgun: &MailgunConfig{
 					APIKey:  ws.Mailgun.APIKey,
-					Domain:  ws.Mailgun.Domain,
+					Domain:  "", // Domain is now handled at workspace level
 					BaseURL: ws.Mailgun.BaseURL,
 					Region:  ws.Mailgun.Region,
 					Tracking: MailgunTracking{
@@ -294,7 +294,7 @@ func loadLegacyWorkspaceConfig(filename string) (*EnhancedGatewayConfig, error) 
 					CustomUserLimits: ws.RateLimits.CustomUserLimits,
 				},
 				Routing: GatewayRoutingConfig{
-					CanRoute:        []string{"@" + ws.Domain},
+					CanRoute:        ws.GetCanRouteDomains(),
 					ExcludePatterns: []string{},
 				},
 				CircuitBreaker: config.GlobalDefaults.CircuitBreaker,

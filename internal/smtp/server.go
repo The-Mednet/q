@@ -407,10 +407,7 @@ func (s *Session) applyDefaultMailgunHeaderRewrite(headerName, headerValue strin
 	// Replace Mandrill domains with Mailgun equivalents
 	if strings.Contains(headerValue, "mandrillapp.com") {
 		// Extract the domain from workspace config
-		domain := workspace.Domain
-		if domain == "" && workspace.Mailgun != nil {
-			domain = workspace.Mailgun.Domain
-		}
+		domain := workspace.GetPrimaryDomain()
 
 		// Replace Mandrill URL with Mailgun-compatible URL
 		modifiedValue = strings.ReplaceAll(headerValue, "mandrillapp.com", domain)

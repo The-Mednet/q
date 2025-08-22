@@ -1,50 +1,168 @@
+// Global state
 let currentPage = 1;
 const pageSize = 20;
 let currentStatus = 'all';
+let currentTab = 'metrics';
+let currentProvider = 'gmail';
 
+// Dashboard initialization
 document.addEventListener('DOMContentLoaded', function() {
-    loadStats();
-    loadMessages();
-    loadRateLimit();
+    initializeTabNavigation();
+    initializeProviderTabs();
+    initializeEventHandlers();
+    loadInitialData();
     
-    document.getElementById('refresh-btn').addEventListener('click', function() {
-        loadStats();
-        loadMessages();
-        loadRateLimit();
+    // Auto refresh data every 10 seconds
+    setInterval(refreshCurrentTabData, 10000);
+});
+
+// Initialize main tab navigation
+function initializeTabNavigation() {
+    const mainTabs = document.querySelectorAll('.main-tab');
+    
+    mainTabs.forEach(tab => {
+        tab.addEventListener('click', function() {
+            const tabId = this.getAttribute('data-tab');
+            switchMainTab(tabId);
+        });
     });
+}
+
+// Initialize provider sub-tabs
+function initializeProviderTabs() {
+    const providerTabs = document.querySelectorAll('.provider-tab-btn');
     
-    document.getElementById('status-filter').addEventListener('change', function(e) {
-        currentStatus = e.target.value;
-        currentPage = 1;
-        loadMessages();
+    providerTabs.forEach(tab => {
+        tab.addEventListener('click', function() {
+            const provider = this.getAttribute('data-provider');
+            switchProviderTab(provider);
+        });
     });
+}
+
+// Initialize event handlers
+function initializeEventHandlers() {
+    // Refresh button
+    const refreshBtn = document.getElementById('refresh-btn');
+    if (refreshBtn) {
+        refreshBtn.addEventListener('click', refreshCurrentTabData);
+    }
     
-    document.getElementById('prev-btn').addEventListener('click', function() {
-        if (currentPage > 1) {
-            currentPage--;
+    // Messages filters and pagination
+    const statusFilter = document.getElementById('status-filter');
+    if (statusFilter) {
+        statusFilter.addEventListener('change', function(e) {
+            currentStatus = e.target.value;
+            currentPage = 1;
             loadMessages();
-        }
-    });
+        });
+    }
     
-    document.getElementById('next-btn').addEventListener('click', function() {
-        currentPage++;
-        loadMessages();
-    });
+    const prevBtn = document.getElementById('prev-btn');
+    if (prevBtn) {
+        prevBtn.addEventListener('click', function() {
+            if (currentPage > 1) {
+                currentPage--;
+                loadMessages();
+            }
+        });
+    }
     
-    document.querySelector('.close').addEventListener('click', closeModal);
+    const nextBtn = document.getElementById('next-btn');
+    if (nextBtn) {
+        nextBtn.addEventListener('click', function() {
+            currentPage++;
+            loadMessages();
+        });
+    }
+    
+    // Modal handlers
+    const closeBtn = document.querySelector('.close');
+    if (closeBtn) {
+        closeBtn.addEventListener('click', closeModal);
+    }
     
     window.addEventListener('click', function(e) {
-        if (e.target === document.getElementById('message-modal')) {
+        const modal = document.getElementById('message-modal');
+        if (modal && e.target === modal) {
             closeModal();
         }
     });
-    
-    setInterval(function() {
-        loadStats();
+}
+
+// Load initial data based on active tab
+function loadInitialData() {
+    loadStats(); // Always load stats for metrics tab
+    if (currentTab === 'messages') {
         loadMessages();
-        loadRateLimit();
-    }, 10000);
-});
+    }
+    loadRateLimit(); // Always load for metrics and providers
+}
+
+// Switch main tabs
+function switchMainTab(tabId) {
+    // Update tab buttons
+    document.querySelectorAll('.main-tab').forEach(tab => {
+        tab.classList.remove('active');
+    });
+    document.querySelector(`[data-tab="${tabId}"]`).classList.add('active');
+    
+    // Update tab content
+    document.querySelectorAll('.tab-content').forEach(content => {
+        content.classList.remove('active');
+    });
+    document.getElementById(`${tabId}-content`).classList.add('active');
+    
+    // Update current tab and load appropriate data
+    currentTab = tabId;
+    loadTabData(tabId);
+}
+
+// Load data for specific tab
+function loadTabData(tabId) {
+    switch(tabId) {
+        case 'metrics':
+            loadStats();
+            loadRateLimit();
+            break;
+        case 'providers':
+            loadRateLimit();
+            break;
+        case 'pools':
+            loadLoadBalancingData();
+            break;
+        case 'messages':
+            loadMessages();
+            break;
+    }
+}
+
+// Refresh data for current active tab
+function refreshCurrentTabData() {
+    loadTabData(currentTab);
+}
+
+// Switch provider sub-tabs
+function switchProviderTab(provider) {
+    // Update provider tab buttons
+    document.querySelectorAll('.provider-tab-btn').forEach(btn => {
+        btn.classList.remove('active');
+    });
+    document.querySelector(`[data-provider="${provider}"]`).classList.add('active');
+    
+    // Update provider panels
+    document.querySelectorAll('.provider-panel').forEach(panel => {
+        panel.classList.remove('active');
+    });
+    document.getElementById(`${provider}-provider`).classList.add('active');
+    
+    currentProvider = provider;
+    
+    // Load data for specific provider if needed
+    if (provider === 'loadbalancing') {
+        loadLoadBalancingData();
+    }
+}
 
 function loadStats() {
     fetch('/api/stats')
@@ -276,65 +394,221 @@ function escapeHtml(text) {
     return div.innerHTML;
 }
 
+// Legacy function - remove if not needed by existing HTML
+function switchProviderTabLegacy(provider, event) {
+    // Update button states
+    document.querySelectorAll('.tab-button').forEach(btn => {
+        btn.classList.remove('active');
+    });
+    
+    // Find the button that was clicked and make it active
+    if (event && event.target) {
+        event.target.classList.add('active');
+    } else {
+        // Fallback: find button by provider name
+        document.querySelectorAll('.tab-button').forEach(btn => {
+            if (btn.textContent.toLowerCase().includes(provider.toLowerCase()) ||
+                (provider === 'all' && btn.textContent.includes('All')) ||
+                (provider === 'loadbalancing' && btn.textContent.includes('Load'))) {
+                btn.classList.add('active');
+            }
+        });
+    }
+    
+    // Update tab content visibility
+    document.querySelectorAll('.provider-tab').forEach(tab => {
+        tab.classList.remove('active');
+    });
+    const targetTab = document.getElementById(`${provider}-tab`);
+    if (targetTab) {
+        targetTab.classList.add('active');
+    }
+    
+    // Load load balancing data if that tab is selected
+    if (provider === 'loadbalancing') {
+        loadLoadBalancingData();
+    }
+}
+
 function loadRateLimit() {
     fetch('/api/rate-limit')
         .then(response => response.json())
         .then(data => {
-            const rateLimitDiv = document.getElementById('rate-limit-info');
-            if (rateLimitDiv) {
-                let workspaceDetails = '';
-                if (data.workspaces && data.workspaces.length > 0) {
-                    workspaceDetails = data.workspaces.map(ws => {
-                        const totalLimit = ws.workspace_limit || 2000;
-                        const sent = ws.workspace_sent || 0;
-                        const remaining = ws.workspace_remaining || Math.max(0, totalLimit - sent);
-                        const percentage = totalLimit > 0 ? ((sent / totalLimit) * 100).toFixed(1) : 0;
-                        
-                        // Generate user details if available
-                        let userDetails = '';
-                        if (ws.users && Object.keys(ws.users).length > 0) {
-                            userDetails = '<div style="margin-top: 10px;"><h5 style="margin-bottom: 8px; color: #666;">User Rate Limits:</h5>';
-                            for (const [email, userData] of Object.entries(ws.users)) {
-                                const userPercentage = userData.limit > 0 ? ((userData.sent / userData.limit) * 100).toFixed(1) : 0;
-                                userDetails += `
-                                    <div style="margin-bottom: 8px; padding: 8px; background-color: #f9f9f9; border-radius: 4px; font-size: 12px;">
-                                        <div style="font-weight: 500;">${userData.email}</div>
-                                        <div>Sent: ${userData.sent} / Limit: ${userData.limit} (${userData.remaining} remaining)</div>
-                                        <div class="progress-bar" style="height: 15px; margin: 4px 0;">
-                                            <div class="progress-fill" style="width: ${userPercentage}%; background-color: #95a5a6;"></div>
-                                        </div>
-                                    </div>
-                                `;
-                            }
-                            userDetails += '</div>';
-                        }
-
-                        return `
-                            <div style="margin-top: 15px; padding: 10px; border: 1px solid #ddd; border-radius: 4px;">
-                                <h4>${ws.display_name || ws.workspace_id}</h4>
-                                <p><strong>Domain:</strong> ${ws.domain || 'N/A'}</p>
-                                <p>Sent: <strong>${sent}</strong> / Limit: <strong>${totalLimit}</strong> (${remaining} remaining)</p>
-                                <div class="progress-bar">
-                                    <div class="progress-fill" style="width: ${percentage}%"></div>
-                                </div>
-                                <p style="font-size: 12px; color: #666;">Resets daily at midnight UTC</p>
-                                ${userDetails}
-                            </div>
-                        `;
-                    }).join('');
-                }
-                
-                rateLimitDiv.innerHTML = `
+            // Group workspaces by provider type
+            const gmailWorkspaces = [];
+            const mailgunWorkspaces = [];
+            const mandrillWorkspaces = [];
+            
+            if (data.workspaces && data.workspaces.length > 0) {
+                data.workspaces.forEach(ws => {
+                    // Determine provider type based on configuration
+                    if (ws.provider_type === 'gmail' || (ws.display_name && ws.display_name.toLowerCase().includes('gmail'))) {
+                        gmailWorkspaces.push(ws);
+                    } else if (ws.provider_type === 'mailgun' || (ws.display_name && ws.display_name.toLowerCase().includes('mailgun'))) {
+                        mailgunWorkspaces.push(ws);
+                    } else if (ws.provider_type === 'mandrill' || (ws.display_name && ws.display_name.toLowerCase().includes('mandrill'))) {
+                        mandrillWorkspaces.push(ws);
+                    } else {
+                        // Default to Gmail for backward compatibility
+                        gmailWorkspaces.push(ws);
+                    }
+                });
+            }
+            
+            // Update metrics tab rate overview
+            updateMetricsRateOverview(data, gmailWorkspaces, mailgunWorkspaces, mandrillWorkspaces);
+            
+            // Update provider tabs
+            updateProviderTab('gmail-rate-limits', gmailWorkspaces);
+            updateProviderTab('mailgun-rate-limits', mailgunWorkspaces);
+            updateProviderTab('mandrill-rate-limits', mandrillWorkspaces);
+            
+            // Update All Providers summary
+            const allRateLimitsDiv = document.getElementById('all-rate-limits');
+            if (allRateLimitsDiv) {
+                allRateLimitsDiv.innerHTML = `
                     <div class="rate-limit-stats">
-                        <h3>Rate Limit Status</h3>
+                        <h4>System Overview</h4>
                         <p>Total Sent Today: <strong>${data.total_sent || 0}</strong></p>
                         <p>Active Workspaces: <strong>${data.workspace_count || 0}</strong></p>
-                        ${workspaceDetails}
+                        <div style="margin-top: 20px;">
+                            <h4>Provider Summary</h4>
+                            <table class="provider-summary-table">
+                                <tr>
+                                    <td>Gmail Workspaces:</td>
+                                    <td><strong>${gmailWorkspaces.length}</strong></td>
+                                    <td>${gmailWorkspaces.map(ws => ws.workspace_id || ws.display_name).join(', ')}</td>
+                                </tr>
+                                <tr>
+                                    <td>Mailgun Workspaces:</td>
+                                    <td><strong>${mailgunWorkspaces.length}</strong></td>
+                                    <td>${mailgunWorkspaces.map(ws => ws.workspace_id || ws.display_name).join(', ')}</td>
+                                </tr>
+                                <tr>
+                                    <td>Mandrill Workspaces:</td>
+                                    <td><strong>${mandrillWorkspaces.length}</strong></td>
+                                    <td>${mandrillWorkspaces.map(ws => ws.workspace_id || ws.display_name).join(', ')}</td>
+                                </tr>
+                            </table>
+                        </div>
                     </div>
                 `;
             }
         })
         .catch(error => console.error('Error loading rate limit:', error));
+}
+
+// Update rate limit overview in metrics tab
+function updateMetricsRateOverview(data, gmailWorkspaces, mailgunWorkspaces, mandrillWorkspaces) {
+    const overviewDiv = document.getElementById('rate-limit-overview');
+    if (!overviewDiv) return;
+    
+    const totalWorkspaces = gmailWorkspaces.length + mailgunWorkspaces.length + mandrillWorkspaces.length;
+    const totalSent = data.total_sent || 0;
+    
+    // Calculate aggregated rate limit usage
+    let totalCapacity = 0;
+    let totalUsed = 0;
+    
+    [...gmailWorkspaces, ...mailgunWorkspaces, ...mandrillWorkspaces].forEach(ws => {
+        totalCapacity += ws.workspace_limit || 2000;
+        totalUsed += ws.workspace_sent || 0;
+    });
+    
+    const overallPercentage = totalCapacity > 0 ? ((totalUsed / totalCapacity) * 100).toFixed(1) : 0;
+    
+    overviewDiv.innerHTML = `
+        <div class="rate-overview-grid">
+            <div class="rate-overview-card">
+                <h4>Total Capacity</h4>
+                <div class="rate-metric">
+                    <span class="rate-value">${totalUsed}</span> / <span class="rate-limit">${totalCapacity}</span>
+                </div>
+                <div class="progress-bar">
+                    <div class="progress-fill" style="width: ${overallPercentage}%"></div>
+                </div>
+                <small class="rate-percentage">${overallPercentage}% utilized</small>
+            </div>
+            <div class="rate-overview-card">
+                <h4>Active Providers</h4>
+                <div class="provider-counts">
+                    <div class="provider-stat">
+                        <span class="provider-icon">📬</span>
+                        <span>Gmail: ${gmailWorkspaces.length}</span>
+                    </div>
+                    <div class="provider-stat">
+                        <span class="provider-icon">📮</span>
+                        <span>Mailgun: ${mailgunWorkspaces.length}</span>
+                    </div>
+                    <div class="provider-stat">
+                        <span class="provider-icon">🐵</span>
+                        <span>Mandrill: ${mandrillWorkspaces.length}</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+    `;
+}
+
+function updateProviderTab(elementId, workspaces) {
+    const div = document.getElementById(elementId);
+    if (!div) return;
+    
+    if (workspaces.length === 0) {
+        div.innerHTML = '<p style="color: #666;">No workspaces configured for this provider</p>';
+        return;
+    }
+    
+    div.innerHTML = `
+        <div class="rate-limit-stats">
+            ${renderWorkspaceDetails(workspaces)}
+        </div>
+    `;
+}
+
+function renderWorkspaceDetails(workspaces) {
+    if (!workspaces || workspaces.length === 0) {
+        return '';
+    }
+    
+    return workspaces.map(ws => {
+        const totalLimit = ws.workspace_limit || 2000;
+        const sent = ws.workspace_sent || 0;
+        const remaining = ws.workspace_remaining || Math.max(0, totalLimit - sent);
+        const percentage = totalLimit > 0 ? ((sent / totalLimit) * 100).toFixed(1) : 0;
+        
+        // Generate user details if available
+        let userDetails = '';
+        if (ws.users && Object.keys(ws.users).length > 0) {
+            userDetails = '<div style="margin-top: 10px;"><h5 style="margin-bottom: 8px; color: #666;">User Rate Limits:</h5>';
+            for (const [email, userData] of Object.entries(ws.users)) {
+                const userPercentage = userData.limit > 0 ? ((userData.sent / userData.limit) * 100).toFixed(1) : 0;
+                userDetails += `
+                    <div style="margin-bottom: 8px; padding: 8px; background-color: #f9f9f9; border-radius: 4px; font-size: 12px;">
+                        <div style="font-weight: 500;">${userData.email}</div>
+                        <div>Sent: ${userData.sent} / Limit: ${userData.limit} (${userData.remaining} remaining)</div>
+                        <div class="progress-bar" style="height: 15px; margin: 4px 0;">
+                            <div class="progress-fill" style="width: ${userPercentage}%; background-color: #95a5a6;"></div>
+                        </div>
+                    </div>
+                `;
+            }
+            userDetails += '</div>';
+        }
+
+        return `
+            <div style="margin-top: 15px; padding: 10px; border: 1px solid #ddd; border-radius: 4px;">
+                <h4>${ws.display_name || ws.workspace_id}</h4>
+                <p><strong>Domains:</strong> ${ws.domains ? ws.domains.join(', ') : (ws.domain || 'N/A')}</p>
+                <p>Sent: <strong>${sent}</strong> / Limit: <strong>${totalLimit}</strong> (${remaining} remaining)</p>
+                <div class="progress-bar">
+                    <div class="progress-fill" style="width: ${percentage}%"></div>
+                </div>
+                <p style="font-size: 12px; color: #666;">Resets daily at midnight UTC</p>
+                ${userDetails}
+            </div>
+        `;
+    }).join('');
 }
 
 function processQueue() {
@@ -380,5 +654,81 @@ function processQueue() {
                 statusElement.className = 'process-status';
                 button.disabled = false;
             }, 3000);
+        });
+}
+
+function loadLoadBalancingData() {
+    // Load pools
+    fetch('/api/loadbalancing/pools')
+        .then(response => response.json())
+        .then(data => {
+            const poolsDiv = document.getElementById('lb-pools');
+            if (!poolsDiv) return;
+            
+            if (!data.pools || data.pools.length === 0) {
+                poolsDiv.innerHTML = '<p style="color: #666;">No load balancing pools configured</p>';
+                return;
+            }
+            
+            let poolsHTML = '<div class="lb-pools-grid">';
+            data.pools.forEach(pool => {
+                const statusClass = pool.enabled ? 'enabled' : 'disabled';
+                const statusText = pool.enabled ? 'Active' : 'Disabled';
+                
+                poolsHTML += `
+                    <div class="lb-pool-card ${statusClass}">
+                        <h5>${escapeHtml(pool.name)}</h5>
+                        <div class="lb-pool-info">
+                            <p><strong>ID:</strong> ${escapeHtml(pool.id)}</p>
+                            <p><strong>Strategy:</strong> ${escapeHtml(pool.strategy)}</p>
+                            <p><strong>Status:</strong> <span class="status-${statusClass}">${statusText}</span></p>
+                            <p><strong>Workspaces:</strong> ${pool.workspace_count}</p>
+                            <p><strong>Selections (24h):</strong> ${pool.selection_count}</p>
+                            <p><strong>Domains:</strong></p>
+                            <ul class="domain-list">
+                                ${pool.domain_patterns.map(d => `<li>${escapeHtml(d)}</li>`).join('')}
+                            </ul>
+                        </div>
+                    </div>
+                `;
+            });
+            poolsHTML += '</div>';
+            poolsDiv.innerHTML = poolsHTML;
+        })
+        .catch(error => {
+            console.error('Error loading pools:', error);
+            document.getElementById('lb-pools').innerHTML = '<p style="color: #e74c3c;">Failed to load pools</p>';
+        });
+    
+    // Load recent selections
+    fetch('/api/loadbalancing/selections')
+        .then(response => response.json())
+        .then(data => {
+            const tbody = document.getElementById('lb-selections-tbody');
+            if (!tbody) return;
+            
+            if (!data.selections || data.selections.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="5" style="text-align: center; color: #666;">No recent selections</td></tr>';
+                return;
+            }
+            
+            let html = '';
+            data.selections.forEach(sel => {
+                html += `
+                    <tr>
+                        <td>${escapeHtml(sel.selected_at)}</td>
+                        <td>${escapeHtml(sel.pool_name)}</td>
+                        <td>${escapeHtml(sel.workspace_id)}</td>
+                        <td>${escapeHtml(sel.sender_email)}</td>
+                        <td>${escapeHtml(sel.capacity_score)}</td>
+                    </tr>
+                `;
+            });
+            tbody.innerHTML = html;
+        })
+        .catch(error => {
+            console.error('Error loading selections:', error);
+            document.getElementById('lb-selections-tbody').innerHTML = 
+                '<tr><td colspan="5" style="text-align: center; color: #e74c3c;">Failed to load selections</td></tr>';
         });
 }

@@ -13,14 +13,95 @@ import (
 )
 
 type WorkspaceConfig struct {
-	ID          string                   `json:"id"`
-	Domain      string                   `json:"domain"`
-	DisplayName string                   `json:"display_name"`
-	RateLimits  WorkspaceRateLimitConfig `json:"rate_limits,omitempty"`
+	ID           string                    `json:"id"`
+	Domain       string                    `json:"domain,omitempty"`      // Deprecated: Use Domains instead
+	Domains      []string                  `json:"domains,omitempty"`     // Multiple domains per workspace
+	DisplayName  string                    `json:"display_name"`
+	RateLimits   WorkspaceRateLimitConfig  `json:"rate_limits,omitempty"`
+	LoadBalancing *WorkspaceLoadBalancingConfig `json:"load_balancing,omitempty"` // Load balancing configuration
 
 	// Gateway configurations - at least one must be specified
-	Gmail   *WorkspaceGmailConfig   `json:"gmail,omitempty"`
-	Mailgun *WorkspaceMailgunConfig `json:"mailgun,omitempty"`
+	Gmail    *WorkspaceGmailConfig    `json:"gmail,omitempty"`
+	Mailgun  *WorkspaceMailgunConfig  `json:"mailgun,omitempty"`
+	Mandrill *WorkspaceMandrillConfig `json:"mandrill,omitempty"`
+}
+
+// GetPrimaryDomain returns the primary domain for this workspace
+func (w *WorkspaceConfig) GetPrimaryDomain() string {
+	if len(w.Domains) > 0 {
+		return w.Domains[0]
+	}
+	return w.Domain // Fallback to legacy single domain
+}
+
+// GetCanRouteDomains returns the routing patterns for all domains
+func (w *WorkspaceConfig) GetCanRouteDomains() []string {
+	var routes []string
+	
+	// Add all domains from Domains field
+	for _, domain := range w.Domains {
+		routes = append(routes, "@"+domain)
+	}
+	
+	// Add legacy Domain field if no Domains specified
+	if len(routes) == 0 && w.Domain != "" {
+		routes = append(routes, "@"+w.Domain)
+	}
+	
+	return routes
+}
+
+// IsLoadBalancingEnabled returns true if this workspace participates in load balancing
+func (w *WorkspaceConfig) IsLoadBalancingEnabled() bool {
+	return w.LoadBalancing != nil && w.LoadBalancing.Enabled
+}
+
+// GetLoadBalancingPools returns the pools this workspace can participate in
+func (w *WorkspaceConfig) GetLoadBalancingPools() []string {
+	if w.LoadBalancing == nil {
+		return nil
+	}
+	return w.LoadBalancing.Pools
+}
+
+// GetLoadBalancingWeight returns the default weight for this workspace in pools
+func (w *WorkspaceConfig) GetLoadBalancingWeight() float64 {
+	if w.LoadBalancing == nil || w.LoadBalancing.DefaultWeight <= 0 {
+		return 1.0 // Default weight
+	}
+	return w.LoadBalancing.DefaultWeight
+}
+
+// GetMinCapacityThreshold returns the minimum capacity threshold for this workspace
+func (w *WorkspaceConfig) GetMinCapacityThreshold() float64 {
+	if w.LoadBalancing == nil || w.LoadBalancing.MinCapacityThreshold <= 0 {
+		return 0.01 // Default to 1% minimum capacity
+	}
+	return w.LoadBalancing.MinCapacityThreshold
+}
+
+// GetLoadBalancingPriority returns the priority level for this workspace
+func (w *WorkspaceConfig) GetLoadBalancingPriority() int {
+	if w.LoadBalancing == nil {
+		return 0 // Default priority
+	}
+	return w.LoadBalancing.Priority
+}
+
+// IsHealthCheckEnabled returns true if health checking is enabled for this workspace
+func (w *WorkspaceConfig) IsHealthCheckEnabled() bool {
+	if w.LoadBalancing == nil {
+		return true // Default to enabled
+	}
+	return w.LoadBalancing.HealthCheckEnabled
+}
+
+// GetMaxConcurrentSelections returns the maximum concurrent selections for this workspace
+func (w *WorkspaceConfig) GetMaxConcurrentSelections() int {
+	if w.LoadBalancing == nil || w.LoadBalancing.MaxConcurrentSelections <= 0 {
+		return 10 // Default to 10 concurrent selections
+	}
+	return w.LoadBalancing.MaxConcurrentSelections
 }
 
 // WorkspaceGmailConfig contains Gmail-specific settings for a workspace
@@ -31,6 +112,7 @@ type WorkspaceGmailConfig struct {
 	DefaultSender      string                        `json:"default_sender,omitempty"` // Fallback sender when impersonation fails
 	RequireValidSender bool                          `json:"require_valid_sender,omitempty"` // Whether to validate sender emails
 	HeaderRewrite      WorkspaceGmailHeaderRewrite   `json:"header_rewrite,omitempty"`
+	EnableWebhooks     bool                          `json:"enable_webhooks"` // Enable webhook notifications
 }
 
 // WorkspaceGmailHeaderRewrite configures header rewriting for Gmail workspaces
@@ -41,14 +123,14 @@ type WorkspaceGmailHeaderRewrite struct {
 
 // WorkspaceMailgunConfig contains Mailgun-specific settings for a workspace
 type WorkspaceMailgunConfig struct {
-	APIKey        string                        `json:"api_key"`
-	Domain        string                        `json:"domain"`
-	BaseURL       string                        `json:"base_url,omitempty"`
-	Region        string                        `json:"region,omitempty"`
-	Enabled       bool                          `json:"enabled"`
-	Tracking      WorkspaceMailgunTracking      `json:"tracking,omitempty"`
-	Tags          []string                      `json:"default_tags,omitempty"`
-	HeaderRewrite WorkspaceMailgunHeaderRewrite `json:"header_rewrite,omitempty"`
+	APIKey         string                        `json:"api_key"`
+	BaseURL        string                        `json:"base_url,omitempty"`
+	Region         string                        `json:"region,omitempty"`
+	Enabled        bool                          `json:"enabled"`
+	Tracking       WorkspaceMailgunTracking      `json:"tracking,omitempty"`
+	Tags           []string                      `json:"default_tags,omitempty"`
+	HeaderRewrite  WorkspaceMailgunHeaderRewrite `json:"header_rewrite,omitempty"`
+	EnableWebhooks bool                          `json:"enable_webhooks"` // Enable webhook notifications
 }
 
 // WorkspaceMailgunTracking configures Mailgun tracking for a workspace
@@ -60,6 +142,34 @@ type WorkspaceMailgunTracking struct {
 
 // WorkspaceMailgunHeaderRewrite configures header rewriting for Mailgun workspaces
 type WorkspaceMailgunHeaderRewrite struct {
+	Enabled bool                           `json:"enabled"`
+	Rules   []WorkspaceHeaderRewriteRule   `json:"rules,omitempty"`
+}
+
+// WorkspaceMandrillConfig contains Mandrill-specific settings for a workspace
+type WorkspaceMandrillConfig struct {
+	APIKey         string                         `json:"api_key"`
+	BaseURL        string                         `json:"base_url,omitempty"`  // Default: https://mandrillapp.com/api/1.0
+	Enabled        bool                           `json:"enabled"`
+	Subaccount     string                         `json:"subaccount,omitempty"` // Optional Mandrill subaccount
+	Tags           []string                       `json:"default_tags,omitempty"`
+	Tracking       WorkspaceMandrillTracking      `json:"tracking,omitempty"`
+	HeaderRewrite  WorkspaceMandrillHeaderRewrite `json:"header_rewrite,omitempty"`
+	EnableWebhooks bool                           `json:"enable_webhooks"` // Enable webhook notifications
+}
+
+// WorkspaceMandrillTracking configures Mandrill tracking for a workspace
+type WorkspaceMandrillTracking struct {
+	Opens       bool `json:"opens"`
+	Clicks      bool `json:"clicks"`
+	AutoText    bool `json:"auto_text"`    // Automatically generate text part from HTML
+	AutoHtml    bool `json:"auto_html"`    // Automatically generate HTML part from text
+	InlineCss   bool `json:"inline_css"`   // Inline CSS styles in HTML emails
+	UrlStripQs  bool `json:"url_strip_qs"` // Strip query strings from URLs when tracking
+}
+
+// WorkspaceMandrillHeaderRewrite configures header rewriting for Mandrill workspaces
+type WorkspaceMandrillHeaderRewrite struct {
 	Enabled bool                           `json:"enabled"`
 	Rules   []WorkspaceHeaderRewriteRule   `json:"rules,omitempty"`
 }
@@ -79,6 +189,30 @@ type WorkspaceRateLimitConfig struct {
 
 	// Custom per-user limits (email -> daily limit)
 	CustomUserLimits map[string]int `json:"custom_user_limits,omitempty"`
+}
+
+// WorkspaceLoadBalancingConfig contains load balancing settings for a workspace
+type WorkspaceLoadBalancingConfig struct {
+	// Enabled indicates if this workspace participates in load balancing pools
+	Enabled bool `json:"enabled"`
+	
+	// Pools is a list of pool IDs this workspace can participate in
+	Pools []string `json:"pools,omitempty"`
+	
+	// DefaultWeight is the default weight for this workspace in pools (can be overridden per pool)
+	DefaultWeight float64 `json:"default_weight,omitempty"`
+	
+	// MinCapacityThreshold is the minimum capacity percentage to be eligible for selection (0.0-1.0)
+	MinCapacityThreshold float64 `json:"min_capacity_threshold,omitempty"`
+	
+	// Priority sets the priority level for this workspace (higher = preferred in priority-based selection)
+	Priority int `json:"priority,omitempty"`
+	
+	// HealthCheckEnabled enables health checking for this workspace
+	HealthCheckEnabled bool `json:"health_check_enabled,omitempty"`
+	
+	// MaxConcurrentSelections limits the number of concurrent email processing for this workspace
+	MaxConcurrentSelections int `json:"max_concurrent_selections,omitempty"`
 }
 
 type Config struct {
@@ -256,119 +390,20 @@ func getEnvDuration(key string, defaultValue time.Duration) time.Duration {
 }
 
 func loadGmailConfig() GmailConfig {
-	// Try to load workspace config from JSON file first
-	workspacesFile := getEnvString("GMAIL_WORKSPACES_FILE", "")
-	if workspacesFile != "" {
-		if workspaces := loadWorkspacesFromFile(workspacesFile); len(workspaces) > 0 {
-			return GmailConfig{
-				Workspaces:    workspaces,
-				LegacyDomains: getEnvStringArray("GMAIL_LEGACY_DOMAINS", []string{"mednet.org", "themednet.org"}),
-			}
-		}
+	// Workspace configuration is now loaded from database only
+	// This function returns an empty config as workspaces are managed separately
+	return GmailConfig{
+		Workspaces:    []WorkspaceConfig{},
+		LegacyDomains: []string{},
 	}
-
-	// Fall back to single workspace from env vars (backward compatibility)
-	serviceAccountFile := getEnvString("GMAIL_SERVICE_ACCOUNT_FILE", "credentials/service-account.json")
-	domain := getEnvString("GMAIL_DOMAIN", "joinmednet.org")
-
-	if serviceAccountFile != "" && domain != "" {
-		return GmailConfig{
-			Workspaces: []WorkspaceConfig{
-				{
-					ID:          domain,
-					Domain:      domain,
-					DisplayName: domain,
-					Gmail: &WorkspaceGmailConfig{
-						ServiceAccountFile: serviceAccountFile,
-						Enabled:            true,
-					},
-				},
-			},
-			LegacyDomains: getEnvStringArray("GMAIL_LEGACY_DOMAINS", []string{"mednet.org", "themednet.org"}),
-		}
-	}
-
-	return GmailConfig{}
 }
 
-func loadWorkspacesFromFile(filename string) []WorkspaceConfig {
-	// First try to load from environment variable (for AWS Secrets Manager, etc.)
-	if envConfig := loadWorkspacesFromEnv(); len(envConfig) > 0 {
-		log.Println("Loaded workspace configuration from environment variable")
-		return envConfig
-	}
-
-	// Fall back to file-based loading
-	data, err := os.ReadFile(filename)
-	if err != nil {
-		return nil
-	}
-
-	var workspaces []WorkspaceConfig
-	if err := json.Unmarshal(data, &workspaces); err != nil {
-		return nil
-	}
-
-	log.Printf("Loaded workspace configuration from file: %s", filename)
-	return workspaces
-}
-
-// loadWorkspacesFromEnv loads workspace configuration from environment variable
-func loadWorkspacesFromEnv() []WorkspaceConfig {
-	// Check for workspace configuration in environment variable
-	envConfig := getEnvString("GMAIL_WORKSPACES_JSON", "")
-	if envConfig == "" {
-		return nil
-	}
-
-	var workspaces []WorkspaceConfig
-	if err := json.Unmarshal([]byte(envConfig), &workspaces); err != nil {
-		log.Printf("Warning: Failed to parse GMAIL_WORKSPACES_JSON: %v", err)
-		return nil
-	}
-
-	return workspaces
-}
-
-func getEnvStringArray(key string, defaultValue []string) []string {
-	value := os.Getenv(key)
-	if value == "" {
-		return defaultValue
-	}
-
-	var result []string
-	if err := json.Unmarshal([]byte(value), &result); err != nil {
-		// If JSON parsing fails, treat as comma-separated string
-		return []string{value}
-	}
-
-	return result
-}
 
 // loadGatewayConfig loads the enhanced gateway configuration
 func loadGatewayConfig() *EnhancedGatewayConfig {
-	// Try to load from file first
-	gatewayConfigFile := getEnvString("GATEWAY_CONFIG_FILE", "")
-	if gatewayConfigFile != "" {
-		if config, err := LoadGatewayConfig(gatewayConfigFile); err == nil {
-			log.Printf("Loaded gateway configuration from %s", gatewayConfigFile)
-			return config
-		} else {
-			log.Printf("Warning: Failed to load gateway configuration from %s: %v", gatewayConfigFile, err)
-		}
-	}
-
-	// Try to load legacy workspaces file for backward compatibility
-	workspacesFile := getEnvString("GMAIL_WORKSPACES_FILE", "")
-	if workspacesFile != "" {
-		if config, err := LoadGatewayConfig(workspacesFile); err == nil {
-			log.Printf("Loaded legacy workspace configuration from %s (converted to gateway format)", workspacesFile)
-			return config
-		}
-	}
-
-	// Default configuration for new deployments
-	log.Printf("No gateway configuration file found, using defaults")
+	// Gateway configuration is now managed separately from workspaces
+	// Return default configuration for legacy compatibility
+	log.Printf("Using default gateway configuration")
 	return &EnhancedGatewayConfig{
 		Gateways: []GatewayConfig{},
 		GlobalDefaults: GlobalGatewayDefaults{

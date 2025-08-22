@@ -21,7 +21,7 @@ type MailgunProvider struct {
 	id              string
 	workspaceID     string
 	config          *config.WorkspaceMailgunConfig
-	domains         []string
+	domains         []string  // Domains this workspace handles (also used for Mailgun API)
 	displayName     string
 	httpClient      *http.Client
 	
@@ -44,7 +44,8 @@ type MailgunErrorResponse struct {
 }
 
 // NewMailgunProvider creates a new Mailgun provider instance
-func NewMailgunProvider(workspaceID string, domain string, config *config.WorkspaceMailgunConfig) (*MailgunProvider, error) {
+// The domains parameter allows specifying multiple domains this provider serves
+func NewMailgunProvider(workspaceID string, domains []string, config *config.WorkspaceMailgunConfig) (*MailgunProvider, error) {
 	if config == nil {
 		return nil, fmt.Errorf("Mailgun config cannot be nil")
 	}
@@ -57,8 +58,9 @@ func NewMailgunProvider(workspaceID string, domain string, config *config.Worksp
 		return nil, fmt.Errorf("Mailgun API key is required for workspace %s", workspaceID)
 	}
 	
-	if config.Domain == "" {
-		return nil, fmt.Errorf("Mailgun domain is required for workspace %s", workspaceID)
+	// Domains are now provided by the router and must be configured in Mailgun
+	if len(domains) == 0 {
+		return nil, fmt.Errorf("No domains configured for Mailgun workspace %s", workspaceID)
 	}
 	
 	// Set default base URL if not provided
@@ -67,12 +69,18 @@ func NewMailgunProvider(workspaceID string, domain string, config *config.Worksp
 		baseURL = "https://api.mailgun.net/v3"
 	}
 	
+	// Create display name based on domains
+	displayName := "Mailgun Provider"
+	if len(domains) > 0 {
+		displayName = fmt.Sprintf("Mailgun Provider for %v", domains)
+	}
+	
 	provider := &MailgunProvider{
 		id:              fmt.Sprintf("mailgun-%s", workspaceID),
 		workspaceID:     workspaceID,
 		config:          config,
-		domains:         []string{domain},
-		displayName:     fmt.Sprintf("Mailgun Provider for %s", domain),
+		domains:         domains,
+		displayName:     displayName,
 		httpClient: &http.Client{
 			Timeout: 30 * time.Second,
 		},
@@ -81,6 +89,15 @@ func NewMailgunProvider(workspaceID string, domain string, config *config.Worksp
 	}
 	
 	return provider, nil
+}
+
+// extractDomain extracts the domain from an email address
+func extractDomain(email string) (string, error) {
+	parts := strings.Split(email, "@")
+	if len(parts) != 2 {
+		return "", fmt.Errorf("invalid email format: %s", email)
+	}
+	return parts[1], nil
 }
 
 // SendMessage implements Provider.SendMessage
@@ -95,6 +112,24 @@ func (m *MailgunProvider) SendMessage(ctx context.Context, msg *models.Message) 
 	
 	if len(msg.To) == 0 {
 		return fmt.Errorf("at least one recipient is required")
+	}
+	
+	// Extract domain from sender's email
+	senderDomain, err := extractDomain(msg.From)
+	if err != nil {
+		return fmt.Errorf("failed to extract domain from sender email: %w", err)
+	}
+	
+	// Verify this domain is in our configured domains
+	domainFound := false
+	for _, d := range m.domains {
+		if d == senderDomain {
+			domainFound = true
+			break
+		}
+	}
+	if !domainFound {
+		return fmt.Errorf("sender domain %s is not configured for this Mailgun provider", senderDomain)
 	}
 	
 	// Prepare form data for Mailgun API
@@ -171,7 +206,7 @@ func (m *MailgunProvider) SendMessage(ctx context.Context, msg *models.Message) 
 			
 			// Add as custom header with h: prefix for Mailgun
 			form.Set(fmt.Sprintf("h:%s", headerName), headerValue)
-			log.Printf("Added custom header %s: %s for Mailgun domain %s", headerName, headerValue, m.config.Domain)
+			log.Printf("Added custom header %s: %s for Mailgun domain %s", headerName, headerValue, senderDomain)
 		}
 	} else {
 		log.Printf("DEBUG: Message has no headers to process (msg.Headers is nil or empty)")
@@ -179,7 +214,7 @@ func (m *MailgunProvider) SendMessage(ctx context.Context, msg *models.Message) 
 	
 	// Send the request
 	startTime := time.Now()
-	err := m.sendRequest(ctx, &form)
+	err = m.sendRequest(ctx, &form, senderDomain)
 	sendDuration := time.Since(startTime)
 	
 	if err != nil {
@@ -198,9 +233,9 @@ func (m *MailgunProvider) SendMessage(ctx context.Context, msg *models.Message) 
 }
 
 // sendRequest sends the actual HTTP request to Mailgun
-func (m *MailgunProvider) sendRequest(ctx context.Context, form *url.Values) error {
+func (m *MailgunProvider) sendRequest(ctx context.Context, form *url.Values, domain string) error {
 	// Create the request
-	apiURL := fmt.Sprintf("%s/%s/messages", m.config.BaseURL, m.config.Domain)
+	apiURL := fmt.Sprintf("%s/%s/messages", m.config.BaseURL, domain)
 	req, err := http.NewRequestWithContext(ctx, "POST", apiURL, strings.NewReader(form.Encode()))
 	if err != nil {
 		return fmt.Errorf("failed to create request: %w", err)
@@ -248,33 +283,24 @@ func (m *MailgunProvider) sendRequest(ctx context.Context, form *url.Values) err
 
 // formatFromAddress formats the from address for Mailgun
 func (m *MailgunProvider) formatFromAddress(msg *models.Message) string {
-	// Extract local part from original sender
-	fromParts := strings.Split(msg.From, "@")
-	if len(fromParts) != 2 {
-		log.Printf("Warning: Invalid from email format: %s", msg.From)
-		return fmt.Sprintf("noreply@%s", m.config.Domain)
-	}
-	
-	localPart := fromParts[0]
-	
-	// Use the configured Mailgun domain for sending
-	rewrittenFrom := fmt.Sprintf("%s@%s", localPart, m.config.Domain)
+	// Use the actual sender's email
+	fromEmail := msg.From
 	
 	// Check for display name in headers
 	if msg.Headers != nil {
 		if senderName, exists := msg.Headers["X-Sender-Name"]; exists {
-			return fmt.Sprintf("%s <%s>", senderName, rewrittenFrom)
+			return fmt.Sprintf("%s <%s>", senderName, fromEmail)
 		}
 		if fromHeader, exists := msg.Headers["From"]; exists && strings.Contains(fromHeader, "<") {
 			// Extract display name from existing From header
 			if idx := strings.Index(fromHeader, "<"); idx > 0 {
 				displayName := strings.TrimSpace(fromHeader[:idx])
-				return fmt.Sprintf("%s <%s>", displayName, rewrittenFrom)
+				return fmt.Sprintf("%s <%s>", displayName, fromEmail)
 			}
 		}
 	}
 	
-	return rewrittenFrom
+	return fromEmail
 }
 
 // addTrackingSettings adds tracking configuration to the form
@@ -289,7 +315,7 @@ func (m *MailgunProvider) addTrackingSettings(form *url.Values) {
 	
 	if m.config.Tracking.Unsubscribe {
 		form.Set("o:tracking-unsubscribe", "true")
-		log.Printf("Added unsubscribe tracking for Mailgun domain %s", m.config.Domain)
+		log.Printf("Added unsubscribe tracking for Mailgun")
 	}
 }
 
@@ -312,7 +338,13 @@ func (m *MailgunProvider) HealthCheck(ctx context.Context) error {
 	m.lastHealthCheck = time.Now()
 	
 	// Perform a simple API call to check if Mailgun is accessible
-	apiURL := fmt.Sprintf("%s/%s", m.config.BaseURL, m.config.Domain)
+	// Use the first configured domain for health checks
+	if len(m.domains) == 0 {
+		m.lastError = fmt.Errorf("no domains configured")
+		m.healthy = false
+		return m.lastError
+	}
+	apiURL := fmt.Sprintf("%s/%s", m.config.BaseURL, m.domains[0])
 	req, err := http.NewRequestWithContext(ctx, "GET", apiURL, nil)
 	if err != nil {
 		m.lastError = err
@@ -374,9 +406,13 @@ func (m *MailgunProvider) GetLastError() error {
 
 // CanSendFromDomain implements Provider.CanSendFromDomain
 func (m *MailgunProvider) CanSendFromDomain(domain string) bool {
-	// Mailgun can send from any domain by rewriting the From address
-	// to use the configured Mailgun domain
-	return true
+	// Check if this domain is in our configured domains list
+	for _, d := range m.domains {
+		if d == domain {
+			return true
+		}
+	}
+	return false
 }
 
 // GetSupportedDomains implements Provider.GetSupportedDomains
@@ -419,7 +455,7 @@ func (m *MailgunProvider) GetProviderInfo() ProviderInfo {
 		},
 		Metadata: map[string]string{
 			"workspace_id":   m.workspaceID,
-			"api_domain":     m.config.Domain,
+			"domains":        strings.Join(m.domains, ","),
 			"base_url":       m.config.BaseURL,
 			"region":         m.config.Region,
 			"tracking_opens": fmt.Sprintf("%t", m.config.Tracking.Opens),

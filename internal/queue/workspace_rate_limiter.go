@@ -294,11 +294,23 @@ func (warl *WorkspaceAwareRateLimiter) GetGlobalStatus() (totalSent int, workspa
 	workspaceCount = len(warl.workspaceConfigs)
 
 	for workspaceID, workspace := range warl.workspaceConfigs {
+		// Determine provider type based on workspace configuration
+		providerType := "unknown"
+		if workspace.Gmail != nil && workspace.Gmail.Enabled {
+			providerType = "gmail"
+		} else if workspace.Mailgun != nil && workspace.Mailgun.Enabled {
+			providerType = "mailgun"
+		} else if workspace.Mandrill != nil && workspace.Mandrill.Enabled {
+			providerType = "mandrill"
+		}
+
 		stats := WorkspaceStats{
-			WorkspaceID: workspaceID,
-			DisplayName: workspace.DisplayName,
-			Domain:      workspace.Domain,
-			Users:       make(map[string]SenderStats),
+			WorkspaceID:  workspaceID,
+			DisplayName:  workspace.DisplayName,
+			Domain:       workspace.GetPrimaryDomain(),
+			Domains:      workspace.Domains,
+			ProviderType: providerType,
+			Users:        make(map[string]SenderStats),
 		}
 
 		// Get workspace-level stats if configured
@@ -412,6 +424,8 @@ type WorkspaceStats struct {
 	WorkspaceID        string                 `json:"workspace_id"`
 	DisplayName        string                 `json:"display_name"`
 	Domain             string                 `json:"domain"`
+	Domains            []string               `json:"domains,omitempty"`
+	ProviderType       string                 `json:"provider_type"`
 	WorkspaceSent      int                    `json:"workspace_sent"`
 	WorkspaceRemaining int                    `json:"workspace_remaining"`
 	WorkspaceLimit     int                    `json:"workspace_limit"`

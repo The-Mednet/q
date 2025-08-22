@@ -69,7 +69,9 @@ type validationResult struct {
 }
 
 // NewGmailProvider creates a new Gmail provider instance
-func NewGmailProvider(workspaceID string, domain string, config *config.WorkspaceGmailConfig) (*GmailProvider, error) {
+// NewGmailProvider creates a new Gmail provider instance
+// The domains parameter allows specifying multiple domains this provider serves
+func NewGmailProvider(workspaceID string, domains []string, config *config.WorkspaceGmailConfig) (*GmailProvider, error) {
 	if config == nil {
 		return nil, fmt.Errorf("Gmail config cannot be nil")
 	}
@@ -78,9 +80,10 @@ func NewGmailProvider(workspaceID string, domain string, config *config.Workspac
 		return nil, fmt.Errorf("Gmail is disabled for workspace %s", workspaceID)
 	}
 	
-	// Check if we have either file or env variable configured
-	if config.ServiceAccountFile == "" && config.ServiceAccountEnv == "" {
-		return nil, fmt.Errorf("Gmail service account credentials required for workspace %s (provide either service_account_file or service_account_env)", workspaceID)
+	// Check if we have either file or env variable configured (or credentials in DB)
+	// We'll allow creation even without file/env if we have a credentials loader
+	if config.ServiceAccountFile == "" && config.ServiceAccountEnv == "" && GetCredentialsLoader() == nil {
+		return nil, fmt.Errorf("Gmail service account credentials required for workspace %s (provide either service_account_file, service_account_env, or upload via dashboard)", workspaceID)
 	}
 	
 	// If using file, validate it exists
@@ -102,23 +105,29 @@ func NewGmailProvider(workspaceID string, domain string, config *config.Workspac
 		if !isValidEmail(config.DefaultSender) {
 			return nil, fmt.Errorf("default sender email is not valid: %s", config.DefaultSender)
 		}
-		log.Printf("Gmail provider for %s configured with default sender: %s", domain, config.DefaultSender)
+		log.Printf("Gmail provider for workspace %s configured with default sender: %s", workspaceID, config.DefaultSender)
+	}
+	
+	// Create display name based on domains
+	displayName := "Gmail Provider"
+	if len(domains) > 0 {
+		displayName = fmt.Sprintf("Gmail Provider for %v", domains)
 	}
 	
 	provider := &GmailProvider{
 		id:              fmt.Sprintf("gmail-%s", workspaceID),
 		workspaceID:     workspaceID,
 		config:          config,
-		domains:         []string{domain},
-		displayName:     fmt.Sprintf("Gmail Provider for %s", domain),
+		domains:         domains,
+		displayName:     displayName,
 		serviceCache:    make(map[string]*gmail.Service),
 		validationCache: make(map[string]validationResult),
 		healthy:         true, // Assume healthy until proven otherwise
 		lastHealthCheck: time.Now(),
 	}
 	
-	log.Printf("Created Gmail provider for workspace %s, domain %s (require_valid_sender: %v)", 
-		workspaceID, domain, config.RequireValidSender)
+	log.Printf("Created Gmail provider for workspace %s, domains %v (require_valid_sender: %v)", 
+		workspaceID, domains, config.RequireValidSender)
 	
 	return provider, nil
 }
@@ -233,6 +242,20 @@ func (g *GmailProvider) SendMessage(ctx context.Context, msg *models.Message) er
 // getServiceForSender creates or retrieves a Gmail service for a specific sender email
 // getServiceAccountData returns the service account JSON data from file or environment variable
 func (g *GmailProvider) getServiceAccountData() ([]byte, error) {
+	// Use credentials loader if available (loads from DB, env, or file)
+	if loader := GetCredentialsLoader(); loader != nil {
+		credentials, err := loader.LoadGmailCredentials(
+			g.workspaceID,
+			g.config.ServiceAccountEnv,
+			g.config.ServiceAccountFile,
+		)
+		if err == nil {
+			return credentials, nil
+		}
+		// Fall back to traditional methods if loader fails
+		log.Printf("Credentials loader failed for workspace %s, falling back: %v", g.workspaceID, err)
+	}
+
 	// Try environment variable first if configured
 	if g.config.ServiceAccountEnv != "" {
 		envData := os.Getenv(g.config.ServiceAccountEnv)

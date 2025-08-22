@@ -42,9 +42,22 @@ func (r *Router) InitializeProviders() error {
 	log.Printf("Initializing providers for %d workspaces", len(workspaces))
 	
 	for workspaceID, workspace := range workspaces {
+		// Get all domains for this workspace
+		domains := workspace.Domains
+		if len(domains) == 0 && workspace.Domain != "" {
+			// Backward compatibility
+			domains = []string{workspace.Domain}
+		}
+		
+		// Use first domain as primary (for legacy providers that need a single domain)
+		primaryDomain := ""
+		if len(domains) > 0 {
+			primaryDomain = domains[0]
+		}
+		
 		// Initialize Gmail provider if configured and enabled
 		if workspace.Gmail != nil && workspace.Gmail.Enabled {
-			provider, err := NewGmailProvider(workspaceID, workspace.Domain, workspace.Gmail)
+			provider, err := NewGmailProvider(workspaceID, domains, workspace.Gmail)
 			if err != nil {
 				log.Printf("Warning: Failed to create Gmail provider for workspace %s: %v", workspaceID, err)
 				continue
@@ -52,14 +65,18 @@ func (r *Router) InitializeProviders() error {
 			
 			providerID := provider.GetID()
 			r.providers[providerID] = provider
-			r.addProviderForDomain(workspace.Domain, provider)
 			
-			log.Printf("Initialized Gmail provider %s for domain %s", providerID, workspace.Domain)
+			// Add provider for all domains
+			for _, domain := range domains {
+				r.addProviderForDomain(domain, provider)
+			}
+			
+			log.Printf("Initialized Gmail provider %s for domains %v", providerID, domains)
 		}
 		
 		// Initialize Mailgun provider if configured and enabled
 		if workspace.Mailgun != nil && workspace.Mailgun.Enabled {
-			provider, err := NewMailgunProvider(workspaceID, workspace.Domain, workspace.Mailgun)
+			provider, err := NewMailgunProvider(workspaceID, domains, workspace.Mailgun)
 			if err != nil {
 				log.Printf("Warning: Failed to create Mailgun provider for workspace %s: %v", workspaceID, err)
 				continue
@@ -67,9 +84,40 @@ func (r *Router) InitializeProviders() error {
 			
 			providerID := provider.GetID()
 			r.providers[providerID] = provider
-			r.addProviderForDomain(workspace.Domain, provider)
 			
-			log.Printf("Initialized Mailgun provider %s for domain %s", providerID, workspace.Domain)
+			// Add provider for all domains
+			for _, domain := range domains {
+				r.addProviderForDomain(domain, provider)
+			}
+			
+			log.Printf("Initialized Mailgun provider %s for domains %v", providerID, domains)
+		}
+		
+		// Initialize Mandrill provider if configured and enabled
+		if workspace.Mandrill != nil && workspace.Mandrill.Enabled {
+			provider, err := NewMandrillProvider(workspace.Mandrill)
+			if err != nil {
+				log.Printf("Warning: Failed to create Mandrill provider for workspace %s: %v", workspaceID, err)
+				continue
+			}
+			
+			// Create a wrapped provider for consistent interface
+			wrappedProvider := &MandrillProviderWrapper{
+				provider:    provider,
+				workspaceID: workspaceID,
+				domain:      primaryDomain,
+				domains:     domains,  // Store all domains
+			}
+			
+			providerID := fmt.Sprintf("mandrill_%s", workspaceID)
+			r.providers[providerID] = wrappedProvider
+			
+			// Add provider for all domains
+			for _, domain := range domains {
+				r.addProviderForDomain(domain, wrappedProvider)
+			}
+			
+			log.Printf("Initialized Mandrill provider %s for domains %v", providerID, domains)
 		}
 	}
 	
@@ -87,6 +135,7 @@ func (r *Router) addProviderForDomain(domain string, provider Provider) {
 		r.providersByDomain[domain] = make([]Provider, 0)
 	}
 	r.providersByDomain[domain] = append(r.providersByDomain[domain], provider)
+	log.Printf("DEBUG: Added provider %s for domain %s (total providers for domain: %d)", provider.GetID(), domain, len(r.providersByDomain[domain]))
 }
 
 // RouteMessage routes a message to the appropriate provider based on sender domain
@@ -108,6 +157,15 @@ func (r *Router) RouteMessage(ctx context.Context, msg *models.Message) (Provide
 	// Find providers for this domain
 	r.mu.RLock()
 	providers, exists := r.providersByDomain[domain]
+	// Debug: log all registered domains
+	log.Printf("DEBUG: Looking for providers for domain %s", domain)
+	log.Printf("DEBUG: Registered domains: %v", func() []string {
+		domains := make([]string, 0, len(r.providersByDomain))
+		for d := range r.providersByDomain {
+			domains = append(domains, d)
+		}
+		return domains
+	}())
 	r.mu.RUnlock()
 	
 	if !exists || len(providers) == 0 {

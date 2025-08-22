@@ -12,6 +12,7 @@ import (
 
 	"relay/internal/config"
 	"relay/internal/llm"
+	"relay/internal/loadbalancer"
 	"relay/internal/processor"
 	"relay/internal/provider"
 	"relay/internal/queue"
@@ -22,6 +23,7 @@ import (
 	"relay/internal/workspace"
 
 	_ "github.com/go-sql-driver/mysql"
+	"github.com/jmoiron/sqlx"
 )
 
 // LegacyProcessorAdapter adapts the unified processor for WebUI compatibility
@@ -97,27 +99,24 @@ func main() {
 		}
 	}
 
-	// Initialize workspace manager
-	// Priority: 
-	// 1. RELAY_WORKSPACE_CONFIG environment variable (contains JSON directly)
-	// 2. WORKSPACE_CONFIG_FILE environment variable (path to file)
-	// 3. Default to workspace.json file
+	// Initialize workspace manager from database
 	var workspaceManager *workspace.Manager
 	
-	if workspaceJSON := os.Getenv("RELAY_WORKSPACE_CONFIG"); workspaceJSON != "" {
-		log.Println("Loading workspace configuration from RELAY_WORKSPACE_CONFIG environment variable")
-		workspaceManager, err = workspace.NewManagerFromJSON([]byte(workspaceJSON))
-	} else {
-		workspaceFile := os.Getenv("WORKSPACE_CONFIG_FILE")
-		if workspaceFile == "" {
-			workspaceFile = "workspace.json" // Default workspace file
-		}
-		log.Printf("Loading workspace configuration from file: %s", workspaceFile)
-		workspaceManager, err = workspace.NewManager(workspaceFile)
+	// Database is now required for workspace configuration
+	if mysqlQueue == nil {
+		log.Fatalf("Database connection is required for workspace configuration")
 	}
 	
+	log.Println("Loading workspace configuration from database")
+	db, err := sql.Open("mysql", cfg.MySQL.GetDSN())
 	if err != nil {
-		log.Fatalf("Failed to initialize workspace manager: %v", err)
+		log.Fatalf("Failed to open database for workspace manager: %v", err)
+	}
+	defer db.Close()
+	
+	workspaceManager, err = workspace.NewDBManager(db)
+	if err != nil {
+		log.Fatalf("Failed to load workspaces from database: %v", err)
 	}
 	
 	// Validate workspace configuration
@@ -127,6 +126,19 @@ func main() {
 	
 	log.Printf("Workspace manager initialized with %d workspaces", len(workspaceManager.GetWorkspaceIDs()))
 
+	// Load balancing initialization will happen after provider router is initialized
+
+	// Initialize credentials loader with database support if MySQL is configured
+	if cfg.MySQL.Host != "" {
+		dbCred, err := sql.Open("mysql", cfg.MySQL.GetDSN())
+		if err == nil {
+			provider.InitCredentialsLoader(dbCred)
+			log.Println("Credentials loader initialized with database support")
+		} else {
+			log.Printf("Warning: Failed to initialize credentials loader database: %v", err)
+		}
+	}
+	
 	// Initialize provider router
 	providerRouter := provider.NewRouter(workspaceManager)
 	
@@ -153,6 +165,68 @@ func main() {
 		log.Printf("%d out of %d providers are healthy", healthyProviders, len(healthResults))
 	}
 
+	// Initialize load balancer after provider router (optional - only if database is available)
+	if mysqlQueue != nil {
+		// Try to initialize load balancer with database
+		dbLB, err := sql.Open("mysql", cfg.MySQL.GetDSN())
+		if err == nil {
+			defer dbLB.Close()
+			
+			// Import sqlx for the load balancer
+			dbx := sqlx.NewDb(dbLB, "mysql")
+			
+			// Try to load load balancing configuration
+			lbConfigLoader := loadbalancer.NewConfigLoader()
+			lbConfig, err := lbConfigLoader.LoadFromCommonSources()
+			if err != nil {
+				log.Printf("No load balancing configuration found: %v", err)
+				log.Println("Load balancing disabled - will use direct domain routing only")
+				// Create sample configuration file for reference
+				if err := lbConfigLoader.SaveSampleConfiguration("load_balancing.json.sample"); err != nil {
+					log.Printf("Failed to save sample configuration: %v", err)
+				}
+			} else if lbConfig.Enabled {
+				// Create rate limiter for load balancer
+				workspaces := workspaceManager.GetAllWorkspaces()
+				lbRateLimiter := queue.NewWorkspaceAwareRateLimiter(workspaces, cfg.Queue.DailyRateLimit)
+				
+				// Create capacity tracker
+				capacityTracker := loadbalancer.NewCapacityTracker(lbRateLimiter, workspaceManager)
+				
+				// Initialize load balancer
+				lb, err := loadbalancer.NewLoadBalancer(
+					dbx,
+					workspaceManager,
+					capacityTracker,
+					lbConfig.Config,
+				)
+				if err != nil {
+					log.Printf("Failed to initialize load balancer: %v", err)
+				} else {
+					// Create pools in the load balancer
+					for _, pool := range lbConfig.Pools {
+						if err := lb.CreatePool(context.Background(), pool); err != nil {
+							log.Printf("Failed to add pool %s: %v", pool.ID, err)
+						} else {
+							log.Printf("Added load balancing pool: %s (%d workspaces, %d domains)",
+								pool.ID, len(pool.Workspaces), len(pool.DomainPatterns))
+						}
+					}
+					log.Printf("Load balancer initialized with %d pools", len(lbConfig.Pools))
+					
+					// Integrate load balancer with workspace manager for generic domain routing
+					workspaceManager.SetLoadBalancer(lb)
+				}
+			} else {
+				log.Println("Load balancing configuration found but disabled")
+			}
+		} else {
+			log.Printf("Failed to open database for load balancer: %v", err)
+		}
+	} else {
+		log.Println("Load balancing disabled - requires MySQL database")
+	}
+
 	// Initialize webhook client
 	webhookClient := webhook.NewClient(&cfg.Webhook)
 
@@ -171,11 +245,29 @@ func main() {
 	)
 
 	// SMTP server needs workspace manager for header rewriting
+	// Load balancer integration will be added through workspace manager
 	smtpServer := smtp.NewServer(&cfg.SMTP, q, workspaceManager)
+	// TODO: Integrate load balancer with SMTP server for generic domain routing
 	
 	// For WebUI server, create a compatibility processor interface  
 	legacyProcessor := &LegacyProcessorAdapter{unifiedProcessor: unifiedProcessor}
-	webServer := webui.NewServer(statsQueue, nil, legacyProcessor, recipientService)
+	
+	// Pass database connection to web server for dashboard API
+	var webServer *webui.Server
+	if mysqlQueue != nil {
+		// If we have MySQL, use it for the dashboard
+		db, err := sql.Open("mysql", cfg.MySQL.GetDSN())
+		if err != nil {
+			log.Printf("Warning: Failed to open database for dashboard: %v", err)
+			webServer = webui.NewServer(statsQueue, nil, legacyProcessor, recipientService)
+		} else {
+			defer db.Close()
+			webServer = webui.NewServerWithDB(statsQueue, nil, legacyProcessor, recipientService, db)
+			log.Println("Dashboard API endpoints enabled with database connection")
+		}
+	} else {
+		webServer = webui.NewServer(statsQueue, nil, legacyProcessor, recipientService)
+	}
 
 	var wg sync.WaitGroup
 	wg.Add(3)

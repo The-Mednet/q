@@ -76,7 +76,7 @@ func NewUnifiedProcessor(
 	
 	log.Printf("Loading %d workspaces for unified processor rate limiter", len(allWorkspaces))
 	for id, workspace := range allWorkspaces {
-		log.Printf("Adding workspace: ID='%s', Domain='%s'", id, workspace.Domain)
+		log.Printf("Adding workspace: ID='%s', Domain='%s'", id, workspace.GetPrimaryDomain())
 		workspaces[id] = workspace
 	}
 	
@@ -206,7 +206,7 @@ func (p *UnifiedProcessor) Process() error {
 			// Put back in queue as deferred
 			p.queue.UpdateStatus(msg.ID, models.StatusQueued, fmt.Errorf("rate limit exceeded for sender %s in workspace %s", msg.From, msg.WorkspaceID))
 			
-			if p.webhookClient != nil {
+			if p.webhookClient != nil && p.shouldSendWebhook(msg) {
 				p.webhookClient.SendDeferredEvent(context.Background(), msg, fmt.Sprintf("Rate limit exceeded for %s in workspace %s", msg.From, msg.WorkspaceID))
 			}
 			
@@ -271,7 +271,7 @@ func (p *UnifiedProcessor) processMessage(msg *models.Message) (string, error) {
 		log.Printf("Error: Message %s contains unresolved variables: %v", msg.ID, err)
 		p.queue.UpdateStatus(msg.ID, models.StatusFailed, err)
 		
-		if p.webhookClient != nil {
+		if p.webhookClient != nil && p.shouldSendWebhook(msg) {
 			p.webhookClient.SendRejectEvent(ctx, msg, fmt.Sprintf("Unresolved variables: %v", err))
 		}
 		return "", fmt.Errorf("message contains unresolved variables: %w", err)
@@ -290,12 +290,17 @@ func (p *UnifiedProcessor) processMessage(msg *models.Message) (string, error) {
 	selectedProvider, err := p.providerRouter.RouteMessage(ctx, msg)
 	if err != nil {
 		log.Printf("Error: Failed to route message %s: %v", msg.ID, err)
-		p.queue.UpdateStatus(msg.ID, models.StatusFailed, err)
+		updateErr := p.queue.UpdateStatus(msg.ID, models.StatusFailed, err)
+		if updateErr != nil {
+			log.Printf("ERROR: Failed to update status to failed for message %s: %v", msg.ID, updateErr)
+		} else {
+			log.Printf("DEBUG: Updated message %s status to failed due to routing error", msg.ID)
+		}
 		
 		// Update recipient delivery status
 		p.updateRecipientDeliveryStatus(msg, models.DeliveryStatusFailed, err.Error())
 		
-		if p.webhookClient != nil {
+		if p.webhookClient != nil && p.shouldSendWebhook(msg) {
 			p.webhookClient.SendRejectEvent(ctx, msg, fmt.Sprintf("Routing failed: %v", err))
 		}
 		return "", fmt.Errorf("failed to route message: %w", err)
@@ -313,7 +318,7 @@ func (p *UnifiedProcessor) processMessage(msg *models.Message) (string, error) {
 			// Update recipient delivery status
 			p.updateRecipientDeliveryStatus(msg, models.DeliveryStatusDeferred, err.Error())
 			
-			if p.webhookClient != nil {
+			if p.webhookClient != nil && p.shouldSendWebhook(msg) {
 				p.webhookClient.SendDeferredEvent(ctx, msg, "Authentication error")
 			}
 		} else {
@@ -329,7 +334,7 @@ func (p *UnifiedProcessor) processMessage(msg *models.Message) (string, error) {
 			}
 			p.updateRecipientDeliveryStatus(msg, deliveryStatus, err.Error())
 			
-			if p.webhookClient != nil {
+			if p.webhookClient != nil && p.shouldSendWebhook(msg) {
 				p.webhookClient.SendBounceEvent(ctx, msg, err.Error())
 			}
 		}
@@ -348,8 +353,8 @@ func (p *UnifiedProcessor) processMessage(msg *models.Message) (string, error) {
 	// Record successful send for rate limiting
 	p.rateLimiter.RecordSend(msg.WorkspaceID, msg.From)
 	
-	// Send success webhook
-	if p.webhookClient != nil {
+	// Send success webhook if enabled for this workspace
+	if p.webhookClient != nil && p.shouldSendWebhook(msg) {
 		err = p.webhookClient.SendSentEvent(ctx, msg)
 		if err != nil {
 			log.Printf("Error sending webhook for message %s: %v", msg.ID, err)
@@ -359,6 +364,35 @@ func (p *UnifiedProcessor) processMessage(msg *models.Message) (string, error) {
 	log.Printf("Successfully sent message %s via provider %s (%s)", msg.ID, providerID, selectedProvider.GetType())
 	
 	return providerID, nil
+}
+
+// shouldSendWebhook checks if webhooks are enabled for this message's workspace
+func (p *UnifiedProcessor) shouldSendWebhook(msg *models.Message) bool {
+	// Extract domain from sender
+	parts := strings.Split(msg.From, "@")
+	if len(parts) != 2 {
+		return false
+	}
+	domain := parts[1]
+	
+	// Get workspace configuration
+	workspace, err := p.workspaceManager.GetWorkspaceByDomain(domain)
+	if err != nil {
+		return false
+	}
+	
+	// Check if webhooks are enabled for the active provider
+	if workspace.Gmail != nil && workspace.Gmail.Enabled {
+		return workspace.Gmail.EnableWebhooks
+	}
+	if workspace.Mailgun != nil && workspace.Mailgun.Enabled {
+		return workspace.Mailgun.EnableWebhooks
+	}
+	if workspace.Mandrill != nil && workspace.Mandrill.Enabled {
+		return workspace.Mandrill.EnableWebhooks
+	}
+	
+	return false
 }
 
 // updateRecipientDeliveryStatus updates the delivery status for all recipients of a message
