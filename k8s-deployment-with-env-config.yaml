@@ -1,0 +1,220 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  annotations: {}
+  labels:
+    app: mednet-q
+  name: mednet-q
+  namespace: production 
+spec:
+  minReadySeconds: 60
+  progressDeadlineSeconds: 600
+  replicas: 1
+  revisionHistoryLimit: 10
+  selector:
+    matchLabels:
+      app: mednet-q
+  strategy:
+    rollingUpdate:
+      maxSurge: 25%
+      maxUnavailable: 25%
+    type: RollingUpdate
+  template:
+    metadata:
+      annotations: {}
+      labels:
+        app: mednet-q
+    spec:
+      containers:
+      - name: q
+        image: 545534769803.dkr.ecr.us-east-1.amazonaws.com/mednet-q:latest
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 8080
+        - containerPort: 2525
+          protocol: TCP
+        env:
+        - name: ENVIRONMENT
+          value: "production"
+        - name: NEW_RELIC_APP_NAME
+          value: "q"
+        - name: NEW_RELIC_INGEST_LICENSE_KEY
+          valueFrom:
+            secretKeyRef:
+              key: BLASTER_NEW_RELIC_INGEST_LICENSE_KEY
+              name: prod-secrets-k8s
+        - name: NEW_RELIC_LOG
+          value: "stdout"
+        - name: NEW_RELIC_LOG_LEVEL
+          value: "info"
+        
+        # MySQL Configuration
+        - name: MYSQL_HOST
+          valueFrom:
+            secretKeyRef:
+              key: PROD_DB_HOST
+              name: prod-secrets-k8s
+        - name: MYSQL_PORT
+          value: "3306"
+        - name: MYSQL_DATABASE
+          valueFrom:
+            secretKeyRef:
+              key: PROD_DB_NAME
+              name: prod-secrets-k8s
+        - name: MYSQL_USER
+          valueFrom:
+            secretKeyRef:
+              key: PROD_DB_USER
+              name: prod-secrets-k8s
+        - name: MYSQL_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              key: PROD_DB_PASSWORD
+              name: prod-secrets-k8s
+        
+        # SMTP Server Configuration
+        - name: SMTP_HOST
+          value: "0.0.0.0"
+        - name: SMTP_PORT
+          value: "2525"
+        - name: SMTP_MAX_SIZE
+          value: "10485760"  # 10MB
+        - name: SMTP_READ_TIMEOUT
+          value: "10s"
+        - name: SMTP_WRITE_TIMEOUT
+          value: "10s"
+        - name: SMTP_AUTH_USERNAME
+          valueFrom:
+            secretKeyRef:
+              key: SMTP_AUTH_USERNAME
+              name: prod-secrets-k8s
+        - name: SMTP_AUTH_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              key: SMTP_AUTH_PASSWORD
+              name: prod-secrets-k8s
+        
+        # Web UI Configuration
+        - name: WEB_UI_PORT
+          value: "8080"
+        
+        # Queue Configuration
+        - name: QUEUE_PROCESS_INTERVAL
+          value: "30s"
+        - name: QUEUE_BATCH_SIZE
+          value: "10"
+        - name: QUEUE_MAX_RETRIES
+          value: "3"
+        - name: QUEUE_DAILY_RATE_LIMIT
+          value: "2000"
+        
+        # Blaster API Configuration
+        - name: BLASTER_API_URL
+          value: "http://blaster-service.production:3034"
+        - name: BLASTER_API_KEY
+          valueFrom:
+            secretKeyRef:
+              key: BLASTER_API_KEY
+              name: prod-secrets-k8s
+        
+        # Workspace Configuration (as JSON string from secret)
+        - name: RELAY_WORKSPACE_CONFIG
+          valueFrom:
+            secretKeyRef:
+              key: RELAY_WORKSPACE_CONFIG
+              name: q-workspace-config
+        
+        # Gmail Service Account Credentials (as JSON strings from secrets)
+        - name: RELAY_JOINMEDNET_SERVICE_ACCOUNT
+          valueFrom:
+            secretKeyRef:
+              key: GMAIL_SA_JOINMEDNET
+              name: gmail-service-accounts
+        - name: RELAY_MEDNETMAIL_SERVICE_ACCOUNT
+          valueFrom:
+            secretKeyRef:
+              key: GMAIL_SA_MEDNETMAIL
+              name: gmail-service-accounts
+        
+        # Mailgun Configuration
+        - name: MAILGUN_API_KEY
+          valueFrom:
+            secretKeyRef:
+              key: MAILGUN_API_KEY
+              name: prod-secrets-k8s
+              optional: true
+        
+        # Mandrill Configuration
+        - name: MANDRILL_API_KEY
+          valueFrom:
+            secretKeyRef:
+              key: MANDRILL_API_KEY
+              name: prod-secrets-k8s
+              optional: true
+        
+        # Webhook Configuration
+        - name: MANDRILL_WEBHOOK_URL
+          value: ""
+        - name: WEBHOOK_TIMEOUT
+          value: "30s"
+        - name: WEBHOOK_MAX_RETRIES
+          value: "3"
+        
+        # LLM Configuration
+        - name: LLM_ENABLED
+          value: "false"
+        - name: LLM_PROVIDER
+          value: "openai"
+        - name: LLM_MODEL
+          value: "gpt-4-mini"
+        - name: LLM_TIMEOUT
+          value: "30s"
+        - name: OPENAI_API_KEY
+          valueFrom:
+            secretKeyRef:
+              key: OPENAI_API_KEY
+              name: prod-secrets-k8s
+              optional: true
+        
+        # Logging Configuration
+        - name: LOG_LEVEL
+          value: "info"
+        
+        # Metrics Configuration
+        - name: METRICS_PORT
+          value: "9090"
+        
+        resources:
+          requests:
+            cpu: "1"
+            memory: 2Gi
+            ephemeral-storage: 100Mi
+          limits:
+            cpu: "2"
+            memory: 8Gi
+            ephemeral-storage: 200Mi
+
+        # Health Probes
+        readinessProbe:
+          httpGet:
+            path: /healthCheck
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 10
+          failureThreshold: 3
+
+        livenessProbe:
+          httpGet:
+            path: /healthCheck
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 20
+          failureThreshold: 3
+
+        terminationMessagePath: /dev/termination-log
+        terminationMessagePolicy: File
+
+      dnsPolicy: ClusterFirst
+      restartPolicy: Always
+      schedulerName: default-scheduler
+      terminationGracePeriodSeconds: 60

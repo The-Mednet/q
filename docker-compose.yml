@@ -1,0 +1,93 @@
+version: '3.8'
+
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: relay-mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-relay-password}
+      MYSQL_DATABASE: relay
+      MYSQL_USER: relay
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-relay-password}
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./schema.sql:/docker-entrypoint-initdb.d/schema.sql
+    ports:
+      - "3306:3306"
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      timeout: 5s
+      retries: 10
+    networks:
+      - relay-network
+
+  relay:
+    build: .
+    container_name: relay-service
+    depends_on:
+      mysql:
+        condition: service_healthy
+    environment:
+      # SMTP Configuration
+      SMTP_HOST: 0.0.0.0
+      SMTP_PORT: 2525
+      SMTP_MAX_SIZE: 10485760
+      SMTP_READ_TIMEOUT: 10s
+      SMTP_WRITE_TIMEOUT: 10s
+      
+      # MySQL Configuration
+      MYSQL_HOST: mysql
+      MYSQL_PORT: 3306
+      MYSQL_USER: relay
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-relay-password}
+      MYSQL_DATABASE: relay
+      
+      # Gmail Configuration
+      GMAIL_CREDENTIALS_FILE: /app/credentials/credentials.json
+      GMAIL_TOKEN_FILE: /app/credentials/token.json
+      GMAIL_SENDER_EMAIL: ${GMAIL_SENDER_EMAIL}
+      
+      # Queue Configuration
+      QUEUE_PROCESS_INTERVAL: ${QUEUE_PROCESS_INTERVAL:-30s}
+      QUEUE_BATCH_SIZE: ${QUEUE_BATCH_SIZE:-10}
+      QUEUE_MAX_RETRIES: ${QUEUE_MAX_RETRIES:-3}
+      QUEUE_DAILY_RATE_LIMIT: ${QUEUE_DAILY_RATE_LIMIT:-2000}
+      
+      # Webhook Configuration
+      MANDRILL_WEBHOOK_URL: ${MANDRILL_WEBHOOK_URL}
+      WEBHOOK_TIMEOUT: ${WEBHOOK_TIMEOUT:-30s}
+      WEBHOOK_MAX_RETRIES: ${WEBHOOK_MAX_RETRIES:-3}
+      
+      # LLM Configuration
+      LLM_ENABLED: ${LLM_ENABLED:-false}
+      LLM_PROVIDER: ${LLM_PROVIDER:-openai}
+      LLM_API_KEY: ${LLM_API_KEY}
+      LLM_MODEL: ${LLM_MODEL:-gpt-3.5-turbo}
+      LLM_TIMEOUT: ${LLM_TIMEOUT:-30s}
+      
+      # OpenAI Configuration (if using OpenAI)
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-3.5-turbo}
+      
+      # Server Configuration
+      METRICS_PORT: 9090
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      WEB_UI_PORT: 8080
+    volumes:
+      - ./credentials:/app/credentials:ro
+      - queue_data:/app/data/queue
+    ports:
+      - "2525:2525"     # SMTP server
+      - "8080:8080"     # Web UI
+      - "9090:9090"     # Metrics (optional)
+    networks:
+      - relay-network
+    restart: unless-stopped
+
+volumes:
+  mysql_data:
+  queue_data:
+
+networks:
+  relay-network:
+    driver: bridge

@@ -1,0 +1,75 @@
+# Binaries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+/relay
+/server
+
+# Test binary, built with `go test -c`
+*.test
+
+# Output of the go coverage tool
+*.out
+
+# Dependency directories
+vendor/
+
+# Go workspace file
+go.work
+
+# Environment files
+.env
+.env.local
+
+# Google OAuth credentials and service accounts
+credentials/
+credentials.json
+token.json
+*.json
+
+# Data directories
+data/
+/queue/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Python (for tests webhook debug server)
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.venv/
+venv/
+env/
+
+# Build artifacts
+/bin/
+/dist/
+relay
+
+# Temporary files
+tmp/
+temp/
+
+# Google SDK and backups
+google-cloud-sdk/
+backup/
+
+# Build artifacts
+main
+__debug_bin*

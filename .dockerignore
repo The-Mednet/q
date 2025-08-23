@@ -1,0 +1,51 @@
+# Git
+.git
+.gitignore
+
+# Go
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+vendor/
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Credentials (will be mounted)
+credentials.json
+token.json
+
+# Data
+data/
+*.log
+logs/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Documentation
+*.md
+LICENSE
+docs/
+
+# Build artifacts
+relay
+/relay
+
+# Test files
+*_test.go
+testdata/

@@ -34,7 +34,7 @@ import { ChartPalette } from '@/assets/styles/theme';
 
 const statusColors = ChartPalette.status;
 
-export default function MetricsPage() {
+function MetricsPage() {
   const { data: stats, isLoading: statsLoading } = useStats();
   const { data: rateLimits, isLoading: rateLimitsLoading } = useRateLimits();
   const { data: health, isLoading: healthLoading } = useHealth();
@@ -349,3 +349,5 @@ export default function MetricsPage() {
     </GridLegacy>
   );
 }
+
+export default React.memo(MetricsPage);

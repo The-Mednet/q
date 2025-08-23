@@ -1,6 +1,6 @@
 'use client';
 
-import React from 'react';
+import React, { useCallback, useMemo } from 'react';
 import { usePathname, useRouter } from 'next/navigation';
 import { 
   Box, 
@@ -40,7 +40,7 @@ const tabs: TabItem[] = [
   { label: 'Messages', path: '/dashboard/messages', icon: <MessagesIcon /> },
 ];
 
-export default function DashboardLayout({
+function DashboardLayout({
   children,
 }: {
   children: React.ReactNode;
@@ -49,11 +49,14 @@ export default function DashboardLayout({
   const router = useRouter();
   const theme = useTheme();
 
-  const currentTab = tabs.findIndex(tab => pathname === tab.path);
+  const currentTab = useMemo(() => 
+    tabs.findIndex(tab => pathname === tab.path), 
+    [pathname]
+  );
 
-  const handleTabChange = (_event: React.SyntheticEvent, newValue: number) => {
+  const handleTabChange = useCallback((_event: React.SyntheticEvent, newValue: number) => {
     router.push(tabs[newValue].path);
-  };
+  }, [router]);
 
   return (
     <Box sx={{ 
@@ -116,6 +119,7 @@ export default function DashboardLayout({
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
             <IconButton
               size="large"
+              aria-label="Notifications"
               sx={{
                 backgroundColor: theme.palette.grey[100],
                 '&:hover': {
@@ -130,6 +134,7 @@ export default function DashboardLayout({
             
             <IconButton
               size="large"
+              aria-label="Settings"
               sx={{
                 backgroundColor: theme.palette.grey[100],
                 '&:hover': {
@@ -236,3 +241,5 @@ export default function DashboardLayout({
     </Box>
   );
 }
+
+export default React.memo(DashboardLayout);

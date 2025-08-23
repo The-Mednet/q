@@ -3,11 +3,14 @@
 export class FetchError extends Error {
   constructor(
     public status: number,
-    public message: string
+    public message: string,
+    public response?: Response
   ) {
     super(message);
+    this.name = 'FetchError';
     this.status = status;
     this.message = message;
+    this.response = response;
   }
 }
 
@@ -50,8 +53,22 @@ export async function fetcher<T>(
   const response = await fetch(url, processedOptions);
 
   if (!response.ok) {
-    const errorText = await response.text();
-    throw new FetchError(response.status, errorText || response.statusText);
+    let errorMessage = response.statusText;
+    
+    try {
+      const errorData = await response.json();
+      errorMessage = errorData.message || errorData.error || errorMessage;
+    } catch {
+      // If JSON parsing fails, try text
+      try {
+        const errorText = await response.text();
+        errorMessage = errorText || errorMessage;
+      } catch {
+        // Use status text as fallback
+      }
+    }
+    
+    throw new FetchError(response.status, errorMessage, response);
   }
 
   // Handle empty responses

@@ -19,6 +19,8 @@ type DBManager struct {
 	loadBalancer      LoadBalancer
 	mu                sync.RWMutex
 	lastRefresh       time.Time
+	stopChan          chan struct{}
+	stopped           sync.WaitGroup
 }
 
 // NewDBManager creates a new workspace manager that loads from database
@@ -28,6 +30,7 @@ func NewDBManager(db *sql.DB) (*Manager, error) {
 		workspaces:        make(map[string]*config.WorkspaceConfig),
 		domainToWorkspace: make(map[string]string),
 		lastRefresh:       time.Now(),
+		stopChan:          make(chan struct{}),
 	}
 	
 	// Load initial workspaces from database
@@ -35,7 +38,8 @@ func NewDBManager(db *sql.DB) (*Manager, error) {
 		return nil, fmt.Errorf("failed to load workspaces from database: %w", err)
 	}
 	
-	// Start background refresh goroutine
+	// Start background refresh goroutine with proper cleanup
+	dbManager.stopped.Add(1)
 	go dbManager.refreshLoop()
 	
 	// Convert to regular Manager for compatibility
@@ -149,14 +153,27 @@ func (m *DBManager) loadWorkspacesFromDB() error {
 
 // refreshLoop periodically refreshes workspaces from the database
 func (m *DBManager) refreshLoop() {
+	defer m.stopped.Done()
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 	
-	for range ticker.C {
-		if err := m.loadWorkspacesFromDB(); err != nil {
-			log.Printf("Error refreshing workspaces from database: %v", err)
+	for {
+		select {
+		case <-ticker.C:
+			if err := m.loadWorkspacesFromDB(); err != nil {
+				log.Printf("Error refreshing workspaces from database: %v", err)
+			}
+		case <-m.stopChan:
+			log.Println("Stopping workspace refresh loop")
+			return
 		}
 	}
+}
+
+// Stop gracefully stops the background refresh loop
+func (m *DBManager) Stop() {
+	close(m.stopChan)
+	m.stopped.Wait()
 }
 
 // toManager converts DBManager to regular Manager for compatibility

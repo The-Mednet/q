@@ -51,6 +51,11 @@ func NewServer(cfg *config.SMTPConfig, q queue.Queue, workspaceManager *workspac
 }
 
 func (s *Server) Start() error {
+	// Validate authentication is configured
+	if os.Getenv("SMTP_AUTH_USERNAME") == "" || os.Getenv("SMTP_AUTH_PASSWORD") == "" {
+		return fmt.Errorf("SMTP authentication not configured: SMTP_AUTH_USERNAME and SMTP_AUTH_PASSWORD must be set")
+	}
+	
 	log.Printf("Starting SMTP server on %s", s.server.Addr)
 	return s.server.ListenAndServe()
 }

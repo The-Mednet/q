@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useState, useCallback, useMemo } from 'react';
 import {
   Box,
   Paper,
@@ -31,15 +31,18 @@ import {
 } from '@mui/icons-material';
 import { useMessages, resendMessage } from '@/services/messages';
 import { Message } from '@/types/relay';
+import { sanitizeHtml } from '@/utils/htmlSanitizer';
 
-const statusConfig = {
+type MessageStatus = 'queued' | 'processing' | 'sent' | 'failed';
+
+const statusConfig: Record<MessageStatus, { color: 'warning' | 'info' | 'success' | 'error'; icon: React.ReactElement }> = {
   queued: { color: 'warning' as const, icon: <Schedule /> },
   processing: { color: 'info' as const, icon: <HourglassEmpty /> },
   sent: { color: 'success' as const, icon: <CheckCircle /> },
   failed: { color: 'error' as const, icon: <ErrorIcon /> },
 };
 
-export default function MessagesPage() {
+function MessagesPage() {
   const [page, setPage] = useState(0);
   const [pageSize, setPageSize] = useState(25);
   const [searchTerm, setSearchTerm] = useState('');
@@ -48,27 +51,30 @@ export default function MessagesPage() {
 
   const { data, error, isLoading, mutate } = useMessages(page * pageSize, pageSize, searchTerm);
 
-  const handleResend = async (messageId: string) => {
+  const handleResend = useCallback(async (messageId: string) => {
     try {
       await resendMessage(messageId);
       mutate();
     } catch (err) {
       console.error('Failed to resend message:', err);
     }
-  };
+  }, [mutate]);
 
-  const handleViewDetails = (message: Message) => {
+  const handleViewDetails = useCallback((message: Message) => {
     setSelectedMessage(message);
     setDetailsOpen(true);
-  };
+  }, []);
 
-  const columns: GridColDef<Message>[] = [
+  const columns: GridColDef<Message>[] = useMemo(() => [
     {
       field: 'status',
       headerName: 'Status',
       width: 120,
       renderCell: (params: GridRenderCellParams<Message>) => {
-        const config = statusConfig[params.row.status as keyof typeof statusConfig];
+        const config = statusConfig[params.row.status as MessageStatus];
+        if (!config) {
+          return <Chip label={params.row.status.toUpperCase()} size="small" />;
+        }
         return (
           <Chip
             icon={config.icon}
@@ -144,7 +150,7 @@ export default function MessagesPage() {
         </Box>
       ),
     },
-  ];
+  ], [handleViewDetails, handleResend]);
 
   if (error) {
     return <Alert severity="error">Failed to load messages: {error.message}</Alert>;
@@ -321,7 +327,7 @@ export default function MessagesPage() {
               </Typography>
               <Paper variant="outlined" sx={{ p: 2, mt: 1, maxHeight: 300, overflow: 'auto' }}>
                 {selectedMessage?.html_body ? (
-                  <div dangerouslySetInnerHTML={{ __html: selectedMessage.html_body }} />
+                  <div dangerouslySetInnerHTML={{ __html: sanitizeHtml(selectedMessage.html_body) }} />
                 ) : (
                   <Typography variant="body2" sx={{ whiteSpace: 'pre-wrap' }}>
                     {selectedMessage?.text_body}
@@ -365,3 +371,5 @@ export default function MessagesPage() {
     </Box>
   );
 }
+
+export default React.memo(MessagesPage);

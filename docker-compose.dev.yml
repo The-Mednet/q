@@ -1,0 +1,21 @@
+version: '3.8'
+
+# Development override - use with: docker-compose -f docker-compose.yml -f docker-compose.dev.yml up
+
+services:
+  relay:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    volumes:
+      # Mount source code for development
+      - .:/app/src:ro
+      # Mount credentials
+      - ./credentials:/app/credentials:ro
+      # Use local .env file
+      - ./.env:/app/.env:ro
+    environment:
+      # Override for development
+      LOG_LEVEL: debug
+      # Enable hot reload if implemented
+      DEV_MODE: "true"
