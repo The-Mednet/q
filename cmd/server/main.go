@@ -48,9 +48,13 @@ func (l *LegacyProcessorAdapter) GetRateLimitStatus() (int, int, map[string]inte
 }
 
 func main() {
+	// Defensive programming: validate configuration loading
 	cfg, err := config.Load()
 	if err != nil {
 		log.Fatalf("Failed to load config: %v", err)
+	}
+	if cfg == nil {
+		log.Fatal("Config is nil after loading")
 	}
 
 	// Create a single shared database connection pool
@@ -65,6 +69,9 @@ func main() {
 		log.Printf("Failed to initialize MySQL queue: %v", err)
 		log.Println("Using in-memory queue instead")
 		memQueue := queue.NewMemoryQueue()
+		if memQueue == nil {
+			log.Fatal("Failed to create memory queue - both MySQL and memory queues unavailable")
+		}
 		q = memQueue
 		statsQueue = memQueue
 		log.Println("Warning: Recipient tracking disabled - requires MySQL database")
@@ -101,18 +108,46 @@ func main() {
 		log.Println("Recipient tracking service initialized successfully")
 	}
 
-	// Initialize workspace manager from database
+	// Initialize workspace manager from database or file
 	var workspaceManager *workspace.Manager
 	
-	// Database is now required for workspace configuration
-	if sharedDB == nil {
-		log.Fatalf("Database connection is required for workspace configuration")
+	// Try database first, then fall back to file-based configuration
+	if sharedDB != nil {
+		log.Println("Attempting to load workspace configuration from database")
+		workspaceManager, err = workspace.NewDBManager(sharedDB)
+		if err != nil {
+			log.Printf("Failed to load workspaces from database: %v", err)
+			log.Println("Falling back to file-based configuration")
+		}
+		// Defensive check for nil workspace manager from database
+		if workspaceManager == nil && err == nil {
+			log.Printf("Warning: Database workspace manager creation returned nil without error")
+		}
 	}
 	
-	log.Println("Loading workspace configuration from database")
-	workspaceManager, err = workspace.NewDBManager(sharedDB)
-	if err != nil {
-		log.Fatalf("Failed to load workspaces from database: %v", err)
+	// If database loading failed or no database, try file-based configuration
+	if workspaceManager == nil {
+		// Try environment variable first
+		if envConfig := os.Getenv("WORKSPACE_CONFIG_JSON"); envConfig != "" {
+			log.Println("Loading workspace configuration from WORKSPACE_CONFIG_JSON environment variable")
+			workspaceManager, err = workspace.NewManagerFromJSON([]byte(envConfig))
+			if err != nil {
+				log.Fatalf("Failed to load workspaces from environment: %v", err)
+			}
+		} else if fileConfig := os.Getenv("GMAIL_WORKSPACES_FILE"); fileConfig != "" {
+			log.Printf("Loading workspace configuration from file: %s", fileConfig)
+			workspaceManager, err = workspace.NewManager(fileConfig)
+			if err != nil {
+				log.Fatalf("Failed to load workspaces from file: %v", err)
+			}
+		} else {
+			// Try default workspace.json file
+			log.Println("Attempting to load workspace configuration from workspace.json")
+			workspaceManager, err = workspace.NewManager("workspace.json")
+			if err != nil {
+				log.Fatalf("No workspace configuration available: %v", err)
+			}
+		}
 	}
 	
 	// Validate workspace configuration
@@ -132,6 +167,9 @@ func main() {
 	
 	// Initialize provider router
 	providerRouter := provider.NewRouter(workspaceManager)
+	if providerRouter == nil {
+		log.Fatal("Failed to create provider router")
+	}
 	
 	// Initialize all providers based on workspace configuration
 	if err := providerRouter.InitializeProviders(); err != nil {
@@ -161,51 +199,54 @@ func main() {
 		// Use shared database connection for load balancer
 		// Import sqlx for the load balancer
 		dbx := sqlx.NewDb(sharedDB, "mysql")
-		
-		// Try to load load balancing configuration
-		lbConfigLoader := loadbalancer.NewConfigLoader()
-		lbConfig, err := lbConfigLoader.LoadFromCommonSources()
-		if err != nil {
-			log.Printf("No load balancing configuration found: %v", err)
-			log.Println("Load balancing disabled - will use direct domain routing only")
-			// Create sample configuration file for reference
-			if err := lbConfigLoader.SaveSampleConfiguration("load_balancing.json.sample"); err != nil {
-				log.Printf("Failed to save sample configuration: %v", err)
-			}
-		} else if lbConfig.Enabled {
-			// Create rate limiter for load balancer
-			workspaces := workspaceManager.GetAllWorkspaces()
-			lbRateLimiter := queue.NewWorkspaceAwareRateLimiter(workspaces, cfg.Queue.DailyRateLimit)
-			
-			// Create capacity tracker
-			capacityTracker := loadbalancer.NewCapacityTracker(lbRateLimiter, workspaceManager)
-			
-			// Initialize load balancer
-			lb, err := loadbalancer.NewLoadBalancer(
-				dbx,
-				workspaceManager,
-				capacityTracker,
-				lbConfig.Config,
-			)
-			if err != nil {
-				log.Printf("Failed to initialize load balancer: %v", err)
-			} else {
-				// Create pools in the load balancer
-				for _, pool := range lbConfig.Pools {
-					if err := lb.CreatePool(context.Background(), pool); err != nil {
-						log.Printf("Failed to add pool %s: %v", pool.ID, err)
-					} else {
-						log.Printf("Added load balancing pool: %s (%d workspaces, %d domains)",
-							pool.ID, len(pool.Workspaces), len(pool.DomainPatterns))
-					}
-				}
-				log.Printf("Load balancer initialized with %d pools", len(lbConfig.Pools))
-				
-				// Integrate load balancer with workspace manager for generic domain routing
-				workspaceManager.SetLoadBalancer(lb)
-			}
+		if dbx == nil {
+			log.Printf("Warning: Failed to create sqlx database connection for load balancer")
 		} else {
-			log.Println("Load balancing configuration found but disabled")
+			// Try to load load balancing configuration
+			lbConfigLoader := loadbalancer.NewConfigLoader()
+			lbConfig, err := lbConfigLoader.LoadFromCommonSources()
+			if err != nil {
+				log.Printf("No load balancing configuration found: %v", err)
+				log.Println("Load balancing disabled - will use direct domain routing only")
+				// Create sample configuration file for reference
+				if err := lbConfigLoader.SaveSampleConfiguration("load_balancing.json.sample"); err != nil {
+					log.Printf("Failed to save sample configuration: %v", err)
+				}
+			} else if lbConfig.Enabled {
+				// Create rate limiter for load balancer
+				workspaces := workspaceManager.GetAllWorkspaces()
+					lbRateLimiter := queue.NewWorkspaceAwareRateLimiter(workspaces, cfg.Queue.DailyRateLimit)
+				
+				// Create capacity tracker
+				capacityTracker := loadbalancer.NewCapacityTracker(lbRateLimiter, workspaceManager)
+				
+				// Initialize load balancer
+				lb, err := loadbalancer.NewLoadBalancer(
+					dbx,
+					workspaceManager,
+					capacityTracker,
+					lbConfig.Config,
+				)
+				if err != nil {
+					log.Printf("Failed to initialize load balancer: %v", err)
+				} else {
+					// Create pools in the load balancer
+					for _, pool := range lbConfig.Pools {
+						if err := lb.CreatePool(context.Background(), pool); err != nil {
+							log.Printf("Failed to add pool %s: %v", pool.ID, err)
+						} else {
+							log.Printf("Added load balancing pool: %s (%d workspaces, %d domains)",
+								pool.ID, len(pool.Workspaces), len(pool.DomainPatterns))
+						}
+					}
+					log.Printf("Load balancer initialized with %d pools", len(lbConfig.Pools))
+					
+					// Integrate load balancer with workspace manager for generic domain routing
+					workspaceManager.SetLoadBalancer(lb)
+				}
+			} else {
+				log.Println("Load balancing configuration found but disabled")
+			}
 		}
 	} else {
 		log.Println("Load balancing disabled - requires MySQL database")
@@ -213,11 +254,16 @@ func main() {
 
 	// Initialize webhook client
 	webhookClient := webhook.NewClient(&cfg.Webhook)
+	if webhookClient == nil {
+		log.Printf("Warning: Webhook client is nil - webhook events disabled")
+	}
 
 	// Initialize LLM personalizer
 	personalizer := llm.NewPersonalizer(&cfg.LLM)
-	if personalizer.IsEnabled() {
+	if personalizer != nil && personalizer.IsEnabled() {
 		log.Println("LLM personalization enabled")
+	} else if personalizer == nil {
+		log.Printf("Warning: LLM personalizer is nil - personalization disabled")
 	}
 
 	// Initialize unified processor
@@ -227,10 +273,16 @@ func main() {
 		q, cfg, workspaceManager, providerRouter,
 		webhookClient, personalizer, recipientService,
 	)
+	if unifiedProcessor == nil {
+		log.Fatal("Failed to create unified processor")
+	}
 
 	// SMTP server needs workspace manager for header rewriting
 	// Load balancer integration will be added through workspace manager
 	smtpServer := smtp.NewServer(&cfg.SMTP, q, workspaceManager)
+	if smtpServer == nil {
+		log.Fatal("Failed to create SMTP server")
+	}
 	// TODO: Integrate load balancer with SMTP server for generic domain routing
 	
 	// For WebUI server, create a compatibility processor interface  
@@ -240,9 +292,15 @@ func main() {
 	var webServer *webui.Server
 	if sharedDB != nil {
 		webServer = webui.NewServerWithDB(statsQueue, nil, legacyProcessor, recipientService, sharedDB)
+		if webServer == nil {
+			log.Fatal("Failed to create web server with database")
+		}
 		log.Println("Dashboard API endpoints enabled with database connection")
 	} else {
 		webServer = webui.NewServer(statsQueue, nil, legacyProcessor, recipientService)
+		if webServer == nil {
+			log.Fatal("Failed to create web server")
+		}
 	}
 
 	var wg sync.WaitGroup

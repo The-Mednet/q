@@ -224,8 +224,26 @@ func (m *Manager) loadWorkspaces(configFile string) error {
 
 // GetWorkspaceByDomain returns a workspace for the given domain
 func (m *Manager) GetWorkspaceByDomain(domain string) (*config.WorkspaceConfig, error) {
+	// Defensive programming: validate manager and input
+	if m == nil {
+		return nil, fmt.Errorf("workspace manager is nil")
+	}
+	if domain == "" {
+		return nil, fmt.Errorf("domain cannot be empty")
+	}
+	
 	m.mu.RLock()
 	defer m.mu.RUnlock()
+	
+	// Check if maps are initialized
+	if m.domainToWorkspace == nil {
+		log.Printf("Warning: domainToWorkspace map is nil")
+		return nil, fmt.Errorf("workspace manager not properly initialized")
+	}
+	if m.workspaces == nil {
+		log.Printf("Warning: workspaces map is nil")
+		return nil, fmt.Errorf("workspace manager not properly initialized")
+	}
 	
 	workspaceID, exists := m.domainToWorkspace[domain]
 	if !exists {
@@ -237,17 +255,43 @@ func (m *Manager) GetWorkspaceByDomain(domain string) (*config.WorkspaceConfig, 
 		return nil, fmt.Errorf("workspace data not found for ID: %s", workspaceID)
 	}
 	
+	// Defensive check for nil workspace
+	if workspace == nil {
+		log.Printf("Warning: Workspace %s is nil in storage", workspaceID)
+		return nil, fmt.Errorf("workspace %s is corrupted (nil)", workspaceID)
+	}
+	
 	return workspace, nil
 }
 
 // GetWorkspaceByID returns a workspace for the given ID
 func (m *Manager) GetWorkspaceByID(workspaceID string) (*config.WorkspaceConfig, error) {
+	// Defensive programming: validate manager and input
+	if m == nil {
+		return nil, fmt.Errorf("workspace manager is nil")
+	}
+	if workspaceID == "" {
+		return nil, fmt.Errorf("workspace ID cannot be empty")
+	}
+	
 	m.mu.RLock()
 	defer m.mu.RUnlock()
+	
+	// Check if workspaces map is initialized
+	if m.workspaces == nil {
+		log.Printf("Warning: workspaces map is nil")
+		return nil, fmt.Errorf("workspace manager not properly initialized")
+	}
 	
 	workspace, exists := m.workspaces[workspaceID]
 	if !exists {
 		return nil, fmt.Errorf("workspace not found: %s", workspaceID)
+	}
+	
+	// Defensive check for nil workspace
+	if workspace == nil {
+		log.Printf("Warning: Workspace %s is nil in storage", workspaceID)
+		return nil, fmt.Errorf("workspace %s is corrupted (nil)", workspaceID)
 	}
 	
 	return workspace, nil
@@ -255,13 +299,30 @@ func (m *Manager) GetWorkspaceByID(workspaceID string) (*config.WorkspaceConfig,
 
 // GetAllWorkspaces returns all configured workspaces
 func (m *Manager) GetAllWorkspaces() map[string]*config.WorkspaceConfig {
+	// Defensive programming: validate manager
+	if m == nil {
+		log.Printf("Warning: workspace manager is nil - returning empty map")
+		return make(map[string]*config.WorkspaceConfig)
+	}
+	
 	m.mu.RLock()
 	defer m.mu.RUnlock()
+	
+	// Check if workspaces map is initialized
+	if m.workspaces == nil {
+		log.Printf("Warning: workspaces map is nil - returning empty map")
+		return make(map[string]*config.WorkspaceConfig)
+	}
 	
 	// Return a copy to prevent external modification
 	result := make(map[string]*config.WorkspaceConfig)
 	for k, v := range m.workspaces {
-		result[k] = v
+		// Skip nil workspaces to prevent issues
+		if v != nil {
+			result[k] = v
+		} else {
+			log.Printf("Warning: Skipping nil workspace with ID %s", k)
+		}
 	}
 	
 	return result
@@ -295,6 +356,10 @@ func (m *Manager) GetDomains() []string {
 
 // GetWorkspaceForSender determines which workspace should handle a message from the given sender
 func (m *Manager) GetWorkspaceForSender(senderEmail string) (*config.WorkspaceConfig, error) {
+	// Defensive programming: validate manager and input
+	if m == nil {
+		return nil, fmt.Errorf("workspace manager is nil")
+	}
 	if senderEmail == "" {
 		return nil, fmt.Errorf("sender email cannot be empty")
 	}
@@ -318,11 +383,12 @@ func (m *Manager) GetWorkspaceForSender(senderEmail string) (*config.WorkspaceCo
 	if m.loadBalancer != nil {
 		ctx := context.Background()
 		workspace, err := m.loadBalancer.SelectWorkspace(ctx, senderEmail)
-		if err == nil {
+		if err == nil && workspace != nil {
 			log.Printf("Load balancer selected workspace %s for sender %s", workspace.ID, senderEmail)
 			return workspace, nil
 		}
-		log.Printf("Load balancer selection failed for %s, falling back to direct mapping: %v", senderEmail, err)
+		// Log warning but continue - don't fail on load balancer errors
+		log.Printf("Warning: Load balancer selection failed for %s, falling back to direct mapping: %v", senderEmail, err)
 	}
 	
 	// Fall back to direct domain mapping
@@ -331,11 +397,21 @@ func (m *Manager) GetWorkspaceForSender(senderEmail string) (*config.WorkspaceCo
 
 // SetLoadBalancer sets the load balancer for advanced routing
 func (m *Manager) SetLoadBalancer(lb LoadBalancer) {
+	// Defensive programming: validate manager
+	if m == nil {
+		log.Printf("Warning: Cannot set load balancer - workspace manager is nil")
+		return
+	}
+	
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	
 	m.loadBalancer = lb
-	log.Println("Load balancer integrated with workspace manager")
+	if lb != nil {
+		log.Println("Load balancer integrated with workspace manager")
+	} else {
+		log.Println("Load balancer removed from workspace manager")
+	}
 }
 
 // GetLoadBalancer returns the current load balancer (if any)
@@ -378,7 +454,7 @@ func (m *Manager) GetWorkspaceForSenderWithContext(ctx context.Context, senderEm
 	// Try load balancer first if available
 	if m.loadBalancer != nil {
 		workspace, err := m.loadBalancer.SelectWorkspace(ctx, senderEmail)
-		if err == nil {
+		if err == nil && workspace != nil {
 			log.Printf("Load balancer selected workspace %s for sender %s", workspace.ID, senderEmail)
 			return workspace, nil
 		}

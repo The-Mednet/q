@@ -70,9 +70,29 @@ func NewUnifiedProcessor(
 	p *llm.Personalizer,
 	rs *recipient.Service,
 ) *UnifiedProcessor {
+	// Defensive programming: validate required inputs
+	if q == nil {
+		log.Fatal("Error: Queue cannot be nil - unified processor requires message queue")
+	}
+	if cfg == nil {
+		log.Fatal("Error: Config cannot be nil - unified processor requires configuration")
+	}
+	if workspaceManager == nil {
+		log.Fatal("Error: WorkspaceManager cannot be nil - unified processor requires workspace management")
+	}
+	if providerRouter == nil {
+		log.Fatal("Error: ProviderRouter cannot be nil - unified processor requires provider routing")
+	}
+	// Note: wc, p, and rs can be nil (optional services)
 	// Create workspace map for rate limiter
 	workspaces := make(map[string]*config.WorkspaceConfig)
 	allWorkspaces := workspaceManager.GetAllWorkspaces()
+	
+	// Defensive check for nil workspaces
+	if allWorkspaces == nil {
+		log.Printf("Warning: GetAllWorkspaces returned nil, using empty map")
+		allWorkspaces = make(map[string]*config.WorkspaceConfig)
+	}
 	
 	log.Printf("Loading %d workspaces for unified processor rate limiter", len(allWorkspaces))
 	for id, workspace := range allWorkspaces {
@@ -84,7 +104,11 @@ func NewUnifiedProcessor(
 	var variableReplacer *variables.VariableReplacer
 	if cfg.Blaster.BaseURL != "" && cfg.Blaster.APIKey != "" {
 		trendingClient := blaster.NewTrendingClient(cfg.Blaster.BaseURL, cfg.Blaster.APIKey)
-		variableReplacer = variables.NewVariableReplacer(trendingClient)
+		if trendingClient != nil {
+			variableReplacer = variables.NewVariableReplacer(trendingClient)
+		} else {
+			log.Printf("Warning: Failed to create trending client, variable replacement disabled")
+		}
 		log.Printf("Variable replacer initialized with blaster API at %s", cfg.Blaster.BaseURL)
 	} else {
 		log.Printf("Variable replacer disabled - blaster API not configured")
@@ -111,10 +135,14 @@ func NewUnifiedProcessor(
 	
 	// Initialize rate limiter with historical data from the queue
 	log.Printf("Initializing unified processor rate limiter with historical data...")
-	if err := processor.rateLimiter.InitializeFromQueue(processor.queue); err != nil {
-		log.Printf("Warning: Failed to initialize rate limiter: %v", err)
+	if processor.rateLimiter != nil {
+		if err := processor.rateLimiter.InitializeFromQueue(processor.queue); err != nil {
+			log.Printf("Warning: Failed to initialize rate limiter: %v", err)
+		} else {
+			log.Printf("Unified processor rate limiter successfully initialized")
+		}
 	} else {
-		log.Printf("Unified processor rate limiter successfully initialized")
+		log.Printf("Warning: Rate limiter is nil, skipping initialization")
 	}
 	
 	return processor
@@ -122,6 +150,16 @@ func NewUnifiedProcessor(
 
 // Start begins the processing loop
 func (p *UnifiedProcessor) Start() {
+	// Defensive programming: validate processor state
+	if p == nil {
+		log.Printf("Error: Processor is nil, cannot start")
+		return
+	}
+	if p.config == nil {
+		log.Printf("Error: Processor config is nil, cannot start")
+		return
+	}
+	
 	log.Println("Starting unified message processor...")
 	
 	ticker := time.NewTicker(p.config.Queue.ProcessInterval)
@@ -150,6 +188,17 @@ func (p *UnifiedProcessor) Stop() {
 
 // Process handles a batch of messages from the queue
 func (p *UnifiedProcessor) Process() error {
+	// Defensive programming: validate processor state
+	if p == nil {
+		return fmt.Errorf("processor is nil")
+	}
+	if p.queue == nil {
+		return fmt.Errorf("processor queue is nil")
+	}
+	if p.config == nil {
+		return fmt.Errorf("processor config is nil")
+	}
+	
 	p.mu.Lock()
 	if p.processing {
 		p.mu.Unlock()
@@ -188,6 +237,12 @@ func (p *UnifiedProcessor) Process() error {
 	
 	// Process each message
 	for _, msg := range messages {
+		// Defensive check for nil message
+		if msg == nil {
+			log.Printf("Warning: Skipping nil message in processing batch")
+			continue
+		}
+		
 		stats.TotalProcessed++
 		
 		// Process recipient information for this message (defensive programming - continue on error)
@@ -199,7 +254,7 @@ func (p *UnifiedProcessor) Process() error {
 		}
 		
 		// Check rate limit for this sender (workspace-aware)
-		if !p.rateLimiter.Allow(msg.WorkspaceID, msg.From) {
+		if p.rateLimiter != nil && !p.rateLimiter.Allow(msg.WorkspaceID, msg.From) {
 			log.Printf("Rate limit exceeded for sender %s in workspace %s (message %s)", msg.From, msg.WorkspaceID, msg.ID)
 			stats.RateLimited++
 			
@@ -211,9 +266,13 @@ func (p *UnifiedProcessor) Process() error {
 			}
 			
 			// Log rate limit status for this sender
-			sent, remaining, resetTime := p.rateLimiter.GetStatus(msg.WorkspaceID, msg.From)
-			log.Printf("Rate limit status for %s in workspace %s: %d sent, %d remaining, resets at %s",
-				msg.From, msg.WorkspaceID, sent, remaining, resetTime.Format(time.RFC3339))
+			if p.rateLimiter != nil {
+				sent, remaining, resetTime := p.rateLimiter.GetStatus(msg.WorkspaceID, msg.From)
+				log.Printf("Rate limit status for %s in workspace %s: %d sent, %d remaining, resets at %s",
+					msg.From, msg.WorkspaceID, sent, remaining, resetTime.Format(time.RFC3339))
+			} else {
+				log.Printf("Rate limiter is nil, cannot get status for %s", msg.From)
+			}
 			
 			continue
 		}
@@ -351,7 +410,11 @@ func (p *UnifiedProcessor) processMessage(msg *models.Message) (string, error) {
 	p.updateRecipientDeliveryStatus(msg, models.DeliveryStatusSent, "")
 	
 	// Record successful send for rate limiting
-	p.rateLimiter.RecordSend(msg.WorkspaceID, msg.From)
+	if p.rateLimiter != nil {
+		p.rateLimiter.RecordSend(msg.WorkspaceID, msg.From)
+	} else {
+		log.Printf("Warning: Rate limiter is nil, cannot record send for %s", msg.From)
+	}
 	
 	// Send success webhook if enabled for this workspace
 	if p.webhookClient != nil && p.shouldSendWebhook(msg) {

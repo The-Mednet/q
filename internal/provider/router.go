@@ -22,6 +22,11 @@ type Router struct {
 
 // NewRouter creates a new provider router
 func NewRouter(workspaceManager *workspace.Manager) *Router {
+	// Defensive programming: validate input
+	if workspaceManager == nil {
+		log.Printf("Warning: WorkspaceManager is nil - provider routing will be limited")
+	}
+	
 	return &Router{
 		workspaceManager: workspaceManager,
 		providers:        make(map[string]Provider),
@@ -31,6 +36,14 @@ func NewRouter(workspaceManager *workspace.Manager) *Router {
 
 // InitializeProviders creates and registers providers based on workspace configuration
 func (r *Router) InitializeProviders() error {
+	// Defensive programming: validate router and components
+	if r == nil {
+		return fmt.Errorf("router is nil")
+	}
+	if r.workspaceManager == nil {
+		return fmt.Errorf("workspace manager is nil - cannot initialize providers")
+	}
+	
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	
@@ -140,12 +153,18 @@ func (r *Router) addProviderForDomain(domain string, provider Provider) {
 
 // RouteMessage routes a message to the appropriate provider based on sender domain
 func (r *Router) RouteMessage(ctx context.Context, msg *models.Message) (Provider, error) {
+	// Defensive programming: validate router and inputs
+	if r == nil {
+		return nil, fmt.Errorf("router is nil")
+	}
 	if msg == nil {
 		return nil, fmt.Errorf("message cannot be nil")
 	}
-	
 	if msg.From == "" {
 		return nil, fmt.Errorf("sender email is required for routing")
+	}
+	if r.workspaceManager == nil {
+		return nil, fmt.Errorf("workspace manager is nil - cannot route message")
 	}
 	
 	// Extract domain from sender email
@@ -178,6 +197,12 @@ func (r *Router) RouteMessage(ctx context.Context, msg *models.Message) (Provide
 		return nil, fmt.Errorf("failed to get workspace for domain %s: %w", domain, err)
 	}
 	
+	// Defensive check for nil workspace
+	if workspace == nil {
+		log.Printf("Warning: GetWorkspaceByDomain returned nil workspace for domain %s", domain)
+		return nil, fmt.Errorf("workspace configuration is nil for domain %s", domain)
+	}
+	
 	// Set workspace ID on message
 	msg.WorkspaceID = workspace.ID
 	
@@ -193,8 +218,26 @@ func (r *Router) RouteMessage(ctx context.Context, msg *models.Message) (Provide
 
 // selectProvider selects the best provider based on configuration and health
 func (r *Router) selectProvider(providers []Provider, workspace *config.WorkspaceConfig) (Provider, error) {
+	// Defensive programming: validate inputs
 	if len(providers) == 0 {
 		return nil, fmt.Errorf("no providers available")
+	}
+	if workspace == nil {
+		log.Printf("Warning: Workspace is nil in selectProvider - using first available provider")
+		// Fallback to first healthy provider
+		for _, provider := range providers {
+			if provider != nil && provider.IsHealthy() {
+				return provider, nil
+			}
+		}
+		// If no healthy providers, use the first non-nil one
+		for _, provider := range providers {
+			if provider != nil {
+				log.Printf("Warning: Using unhealthy provider %s as fallback", provider.GetID())
+				return provider, nil
+			}
+		}
+		return nil, fmt.Errorf("all providers are nil")
 	}
 	
 	// If only one provider, use it if healthy
@@ -212,6 +255,12 @@ func (r *Router) selectProvider(providers []Provider, workspace *config.Workspac
 	var gmailProvider, mailgunProvider Provider
 	
 	for _, provider := range providers {
+		// Defensive check for nil provider
+		if provider == nil {
+			log.Printf("Warning: Skipping nil provider in selection")
+			continue
+		}
+		
 		switch provider.GetType() {
 		case ProviderTypeGmail:
 			gmailProvider = provider
@@ -261,6 +310,12 @@ func (r *Router) selectProvider(providers []Provider, workspace *config.Workspac
 	
 	// Fallback to any available provider
 	for _, provider := range providers {
+		// Defensive check for nil provider
+		if provider == nil {
+			log.Printf("Warning: Skipping nil provider in fallback selection")
+			continue
+		}
+		
 		if provider.IsHealthy() {
 			log.Printf("Using fallback provider %s for workspace %s", provider.GetID(), workspace.ID)
 			return provider, nil
@@ -268,8 +323,15 @@ func (r *Router) selectProvider(providers []Provider, workspace *config.Workspac
 	}
 	
 	// Last resort - use any provider even if unhealthy
-	log.Printf("Warning: All providers unhealthy, using first available for workspace %s", workspace.ID)
-	return providers[0], nil
+	for _, provider := range providers {
+		if provider != nil {
+			log.Printf("Warning: All providers unhealthy, using provider %s for workspace %s", provider.GetID(), workspace.ID)
+			return provider, nil
+		}
+	}
+	
+	log.Printf("Error: All providers are nil for workspace %s", workspace.ID)
+	return nil, fmt.Errorf("all providers are nil")
 }
 
 // extractDomainFromEmail extracts the domain part from an email address

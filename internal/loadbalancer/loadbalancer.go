@@ -37,6 +37,7 @@ func NewLoadBalancer(
 	capacityTracker *CapacityTracker,
 	config *LoadBalancerConfig,
 ) (*LoadBalancerImpl, error) {
+	// Defensive programming: validate all required inputs
 	if db == nil {
 		return nil, fmt.Errorf("database connection is required")
 	}
@@ -47,7 +48,11 @@ func NewLoadBalancer(
 		return nil, fmt.Errorf("capacity tracker is required")
 	}
 	if config == nil {
+		log.Printf("Warning: LoadBalancer config is nil, using defaults")
 		config = DefaultLoadBalancerConfig()
+		if config == nil {
+			return nil, fmt.Errorf("failed to create default config")
+		}
 	}
 
 	// Create pool manager
@@ -87,6 +92,13 @@ func NewLoadBalancer(
 
 // SelectWorkspace selects the optimal workspace from available pools for the given sender
 func (lb *LoadBalancerImpl) SelectWorkspace(ctx context.Context, senderEmail string) (*config.WorkspaceConfig, error) {
+	// Defensive programming: validate load balancer state and inputs
+	if lb == nil {
+		return nil, NewLoadBalancerError(ErrorTypeInvalidConfig, "load balancer is nil", nil)
+	}
+	if lb.poolManager == nil {
+		return nil, NewLoadBalancerError(ErrorTypeInvalidConfig, "pool manager is nil", nil)
+	}
 	if senderEmail == "" {
 		return nil, NewLoadBalancerError(ErrorTypeInvalidConfig, "sender email is required", nil)
 	}
@@ -122,6 +134,12 @@ func (lb *LoadBalancerImpl) SelectWorkspace(ctx context.Context, senderEmail str
 			fmt.Sprintf("no enabled pools found for domain: %s", domain), nil)
 	}
 
+	// Defensive check for nil selected pool
+	if selectedPool == nil {
+		return nil, NewLoadBalancerError(ErrorTypePoolNotFound, 
+			fmt.Sprintf("selected pool is nil for domain: %s", domain), nil)
+	}
+	
 	// Build candidates from pool workspaces
 	candidates, err := lb.buildCandidates(ctx, selectedPool, senderEmail)
 	if err != nil {
@@ -163,9 +181,28 @@ func (lb *LoadBalancerImpl) SelectWorkspace(ctx context.Context, senderEmail str
 
 // buildCandidates creates workspace candidates from a pool
 func (lb *LoadBalancerImpl) buildCandidates(ctx context.Context, pool *LoadBalancingPool, senderEmail string) ([]WorkspaceCandidate, error) {
+	// Defensive programming: validate inputs
+	if lb == nil {
+		return nil, fmt.Errorf("load balancer is nil")
+	}
+	if pool == nil {
+		return nil, fmt.Errorf("pool is nil")
+	}
+	if lb.workspaceProvider == nil {
+		return nil, fmt.Errorf("workspace provider is nil")
+	}
+	if lb.capacityTracker == nil {
+		return nil, fmt.Errorf("capacity tracker is nil")
+	}
+	
 	var candidates []WorkspaceCandidate
 
 	for _, poolWorkspace := range pool.Workspaces {
+		// Defensive check for empty workspace ID (since PoolWorkspace is a struct, not a pointer)
+		if poolWorkspace.WorkspaceID == "" {
+			log.Printf("Warning: Skipping workspace with empty ID in pool %s", pool.ID)
+			continue
+		}
 		if !poolWorkspace.Enabled {
 			continue
 		}
@@ -174,6 +211,12 @@ func (lb *LoadBalancerImpl) buildCandidates(ctx context.Context, pool *LoadBalan
 		workspaceConfig, err := lb.workspaceProvider.GetWorkspaceByID(poolWorkspace.WorkspaceID)
 		if err != nil {
 			log.Printf("Warning: Failed to get workspace %s: %v", poolWorkspace.WorkspaceID, err)
+			continue
+		}
+		
+		// Defensive check for nil workspace config
+		if workspaceConfig == nil {
+			log.Printf("Warning: Workspace config is nil for workspace %s", poolWorkspace.WorkspaceID)
 			continue
 		}
 
@@ -226,9 +269,22 @@ func (lb *LoadBalancerImpl) RecordSelection(ctx context.Context, poolID, workspa
 
 // GetPoolStatus returns the current status and health of a pool
 func (lb *LoadBalancerImpl) GetPoolStatus(poolID string) (*PoolStatus, error) {
+	// Defensive programming: validate load balancer state
+	if lb == nil {
+		return nil, fmt.Errorf("load balancer is nil")
+	}
+	if lb.poolManager == nil {
+		return nil, fmt.Errorf("pool manager is nil")
+	}
+	
 	pool, err := lb.poolManager.GetPool(poolID)
 	if err != nil {
 		return nil, err
+	}
+	
+	// Defensive check for nil pool
+	if pool == nil {
+		return nil, fmt.Errorf("pool %s is nil", poolID)
 	}
 
 	status := &PoolStatus{
@@ -430,10 +486,23 @@ type SimpleHealthChecker struct {
 
 // IsWorkspaceHealthy checks if a workspace is healthy (simplified implementation)
 func (shc *SimpleHealthChecker) IsWorkspaceHealthy(ctx context.Context, workspaceID string) (bool, error) {
+	// Defensive programming: validate health checker state
+	if shc == nil {
+		return false, fmt.Errorf("health checker is nil")
+	}
+	if shc.workspaceProvider == nil {
+		return false, fmt.Errorf("workspace provider is nil")
+	}
+	
 	// For now, just check if the workspace exists and is configured properly
 	workspace, err := shc.workspaceProvider.GetWorkspaceByID(workspaceID)
 	if err != nil {
 		return false, err
+	}
+	
+	// Defensive check for nil workspace
+	if workspace == nil {
+		return false, fmt.Errorf("workspace %s is nil", workspaceID)
 	}
 
 	// Check if at least one provider is enabled

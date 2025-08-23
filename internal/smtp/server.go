@@ -29,6 +29,24 @@ type Server struct {
 }
 
 func NewServer(cfg *config.SMTPConfig, q queue.Queue, workspaceManager *workspace.Manager) *Server {
+	// Defensive programming: validate inputs
+	if cfg == nil {
+		log.Printf("Error: SMTP config is nil, using defaults")
+		cfg = &config.SMTPConfig{
+			Host: "localhost",
+			Port: 2525,
+			ReadTimeout: 30 * time.Second,
+			WriteTimeout: 30 * time.Second,
+			MaxSize: 25 * 1024 * 1024, // 25MB
+		}
+	}
+	if q == nil {
+		log.Fatal("Error: Queue cannot be nil - service cannot function without message queue")
+	}
+	if workspaceManager == nil {
+		log.Printf("Warning: WorkspaceManager is nil - workspace routing will be disabled")
+	}
+
 	s := &Server{
 		config:           cfg,
 		queue:            q,
@@ -51,6 +69,14 @@ func NewServer(cfg *config.SMTPConfig, q queue.Queue, workspaceManager *workspac
 }
 
 func (s *Server) Start() error {
+	// Defensive programming: check for nil server
+	if s == nil {
+		return fmt.Errorf("server instance is nil")
+	}
+	if s.server == nil {
+		return fmt.Errorf("SMTP server instance is nil - initialization failed")
+	}
+	
 	// Validate authentication is configured
 	if os.Getenv("SMTP_AUTH_USERNAME") == "" || os.Getenv("SMTP_AUTH_PASSWORD") == "" {
 		return fmt.Errorf("SMTP authentication not configured: SMTP_AUTH_USERNAME and SMTP_AUTH_PASSWORD must be set")
@@ -70,6 +96,18 @@ type Backend struct {
 }
 
 func (b *Backend) NewSession(_ *smtp.Conn) (smtp.Session, error) {
+	// Defensive programming: validate backend components
+	if b == nil {
+		return nil, fmt.Errorf("backend is nil")
+	}
+	if b.queue == nil {
+		return nil, fmt.Errorf("queue is nil - cannot create session")
+	}
+	// workspaceManager can be nil - we'll handle it in session methods
+	if b.workspaceManager == nil {
+		log.Printf("Warning: WorkspaceManager is nil in session creation - workspace routing disabled")
+	}
+	
 	return &Session{queue: b.queue, workspaceManager: b.workspaceManager}, nil
 }
 
@@ -158,8 +196,18 @@ func (s *Session) Rcpt(to string, opts *smtp.RcptOptions) error {
 }
 
 func (s *Session) Data(r io.Reader) error {
+	// Defensive programming: validate session state
+	if s == nil {
+		return fmt.Errorf("session is nil")
+	}
 	if s.message == nil {
 		return errors.New("no mail transaction in progress")
+	}
+	if s.queue == nil {
+		return fmt.Errorf("queue is nil - cannot process message")
+	}
+	if r == nil {
+		return fmt.Errorf("reader is nil - cannot read message data")
 	}
 
 	// Implement message size limit to prevent DoS attacks
@@ -183,6 +231,14 @@ func (s *Session) Data(r io.Reader) error {
 		return err
 	}
 
+	// Defensive check before enqueueing
+	if s.queue == nil {
+		return fmt.Errorf("queue is nil - cannot enqueue message")
+	}
+	if s.message == nil {
+		return fmt.Errorf("message is nil - cannot enqueue")
+	}
+	
 	if err := s.queue.Enqueue(s.message); err != nil {
 		return fmt.Errorf("failed to queue message: %w", err)
 	}
@@ -323,11 +379,23 @@ func (s *Session) modifyHeaderForProvider(headerName, headerValue string) string
 
 	log.Printf("DEBUG: Getting workspace for sender: %s", s.from)
 
+	// Defensive programming: check workspaceManager before use
+	if s.workspaceManager == nil {
+		log.Printf("Warning: WorkspaceManager is nil - cannot modify headers based on provider")
+		return headerValue
+	}
+	
 	// Get workspace configuration to determine provider type
 	workspace, err := s.workspaceManager.GetWorkspaceForSender(s.from)
 	if err != nil {
 		// If we can't determine workspace, return original value
 		log.Printf("DEBUG: Could not get workspace for sender %s: %v", s.from, err)
+		return headerValue
+	}
+	
+	// Defensive check for nil workspace
+	if workspace == nil {
+		log.Printf("Warning: GetWorkspaceForSender returned nil workspace for %s", s.from)
 		return headerValue
 	}
 
@@ -402,6 +470,12 @@ func (s *Session) applyHeaderRewriteRules(headerName, headerValue string, worksp
 
 // applyDefaultMailgunHeaderRewrite applies default header rewriting for Mailgun workspaces
 func (s *Session) applyDefaultMailgunHeaderRewrite(headerName, headerValue string, workspace *config.WorkspaceConfig) string {
+	// Defensive programming: validate inputs
+	if workspace == nil {
+		log.Printf("Warning: Workspace is nil in applyDefaultMailgunHeaderRewrite")
+		return headerValue
+	}
+	
 	if strings.ToLower(headerName) != "list-unsubscribe" {
 		return headerValue
 	}
@@ -413,6 +487,10 @@ func (s *Session) applyDefaultMailgunHeaderRewrite(headerName, headerValue strin
 	if strings.Contains(headerValue, "mandrillapp.com") {
 		// Extract the domain from workspace config
 		domain := workspace.GetPrimaryDomain()
+		if domain == "" {
+			log.Printf("Warning: Workspace %s has no primary domain for header rewrite", workspace.ID)
+			return headerValue
+		}
 
 		// Replace Mandrill URL with Mailgun-compatible URL
 		modifiedValue = strings.ReplaceAll(headerValue, "mandrillapp.com", domain)
@@ -442,10 +520,22 @@ func (s *Session) addMissingHeaders() {
 
 	log.Printf("DEBUG: Getting workspace for sender: %s", s.from)
 
+	// Defensive programming: check workspaceManager before use
+	if s.workspaceManager == nil {
+		log.Printf("Warning: WorkspaceManager is nil - cannot add missing headers")
+		return
+	}
+	
 	// Get workspace configuration
 	workspace, err := s.workspaceManager.GetWorkspaceForSender(s.from)
 	if err != nil {
 		log.Printf("DEBUG: Could not get workspace for sender %s: %v", s.from, err)
+		return
+	}
+	
+	// Defensive check for nil workspace
+	if workspace == nil {
+		log.Printf("Warning: GetWorkspaceForSender returned nil workspace for %s", s.from)
 		return
 	}
 

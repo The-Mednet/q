@@ -20,6 +20,16 @@ type WorkspaceAwareRateLimiter struct {
 }
 
 func NewWorkspaceAwareRateLimiter(workspaces map[string]*config.WorkspaceConfig, globalDefault int) *WorkspaceAwareRateLimiter {
+	// Defensive programming: validate inputs
+	if workspaces == nil {
+		log.Printf("Warning: Workspaces map is nil, creating empty map")
+		workspaces = make(map[string]*config.WorkspaceConfig)
+	}
+	if globalDefault <= 0 {
+		log.Printf("Warning: Invalid globalDefault %d, using default 200", globalDefault)
+		globalDefault = 200
+	}
+	
 	return &WorkspaceAwareRateLimiter{
 		workspaceConfigs:  workspaces,
 		limiters:          make(map[string]*RateLimiter),
@@ -29,6 +39,16 @@ func NewWorkspaceAwareRateLimiter(workspaces map[string]*config.WorkspaceConfig,
 }
 
 func (warl *WorkspaceAwareRateLimiter) Allow(workspaceID, senderEmail string) bool {
+	// Defensive programming: validate rate limiter state
+	if warl == nil {
+		log.Printf("Warning: WorkspaceAwareRateLimiter is nil")
+		return false
+	}
+	if warl.workspaceConfigs == nil {
+		log.Printf("Warning: WorkspaceConfigs map is nil")
+		return false
+	}
+	
 	warl.mu.RLock()
 	workspace, exists := warl.workspaceConfigs[workspaceID]
 	warl.mu.RUnlock()
@@ -40,9 +60,9 @@ func (warl *WorkspaceAwareRateLimiter) Allow(workspaceID, senderEmail string) bo
 	}
 
 	// Check workspace-level limit first (if configured)
-	if workspace.RateLimits.WorkspaceDaily > 0 {
+	if workspace != nil && workspace.RateLimits.WorkspaceDaily > 0 {
 		workspaceLimiter := warl.getWorkspaceLimiter(workspaceID, workspace.RateLimits.WorkspaceDaily)
-		if !workspaceLimiter.Allow() {
+		if workspaceLimiter != nil && !workspaceLimiter.Allow() {
 			return false // Workspace limit exceeded
 		}
 	}
@@ -78,6 +98,16 @@ func (warl *WorkspaceAwareRateLimiter) Record(workspaceID, senderEmail string, c
 }
 
 func (warl *WorkspaceAwareRateLimiter) GetStatus(workspaceID, senderEmail string) (sent int, remaining int, resetTime time.Time) {
+	// Defensive programming: validate rate limiter state
+	if warl == nil {
+		log.Printf("Warning: WorkspaceAwareRateLimiter is nil")
+		return 0, 0, time.Now()
+	}
+	if warl.workspaceConfigs == nil {
+		log.Printf("Warning: WorkspaceConfigs map is nil")
+		return 0, 0, time.Now()
+	}
+	
 	warl.mu.RLock()
 	workspace, exists := warl.workspaceConfigs[workspaceID]
 	warl.mu.RUnlock()
@@ -132,8 +162,16 @@ func (warl *WorkspaceAwareRateLimiter) RecordSend(workspaceID, senderEmail strin
 
 // InitializeFromQueue initializes rate limiters with historical data from the queue
 func (warl *WorkspaceAwareRateLimiter) InitializeFromQueue(queue Queue) error {
+	// Defensive programming: validate inputs and state
+	if warl == nil {
+		return fmt.Errorf("rate limiter is nil")
+	}
 	if queue == nil {
 		return fmt.Errorf("queue is nil")
+	}
+	if warl.workspaceConfigs == nil {
+		log.Printf("Warning: WorkspaceConfigs is nil, initializing empty map")
+		warl.workspaceConfigs = make(map[string]*config.WorkspaceConfig)
 	}
 
 	counts, err := queue.GetSentCountsByWorkspaceAndSender()
@@ -167,12 +205,12 @@ func (warl *WorkspaceAwareRateLimiter) InitializeFromQueue(queue Queue) error {
 
 		// Check if workspace exists (with lock protection)
 		warl.mu.RLock()
-		_, exists := warl.workspaceConfigs[workspaceID]
+		workspaceConfig, exists := warl.workspaceConfigs[workspaceID]
 		warl.mu.RUnlock()
 
-		if !exists {
-			log.Printf("Warning: Workspace %s not found in configs, available: %+v", workspaceID, warl.getAvailableWorkspaceIds())
-			continue // Skip unknown workspaces
+		if !exists || workspaceConfig == nil {
+			log.Printf("Warning: Workspace %s not found or nil in configs, available: %+v", workspaceID, warl.getAvailableWorkspaceIds())
+			continue // Skip unknown or nil workspaces
 		}
 
 		// Initialize user-level limiters (no lock held here)
@@ -353,6 +391,12 @@ func (warl *WorkspaceAwareRateLimiter) GetGlobalStatus() (totalSent int, workspa
 }
 
 func (warl *WorkspaceAwareRateLimiter) getUserLimit(workspace *config.WorkspaceConfig, senderEmail string) int {
+	// Defensive programming: validate workspace
+	if workspace == nil {
+		log.Printf("Warning: Workspace is nil in getUserLimit, using global default")
+		return warl.globalDefault
+	}
+	
 	// Priority order: Custom user limit > Per-user workspace limit > Global default
 
 	// Check custom user limit first
@@ -372,6 +416,16 @@ func (warl *WorkspaceAwareRateLimiter) getUserLimit(workspace *config.WorkspaceC
 }
 
 func (warl *WorkspaceAwareRateLimiter) getLimiterForSender(workspaceID, senderEmail string, limit int) *RateLimiter {
+	// Defensive programming: validate rate limiter state
+	if warl == nil {
+		log.Printf("Warning: WorkspaceAwareRateLimiter is nil")
+		return nil
+	}
+	if warl.limiters == nil {
+		log.Printf("Warning: Limiters map is nil, initializing")
+		warl.limiters = make(map[string]*RateLimiter)
+	}
+	
 	key := fmt.Sprintf("%s:%s", workspaceID, senderEmail)
 
 	warl.mu.RLock()
