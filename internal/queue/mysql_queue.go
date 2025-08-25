@@ -51,8 +51,8 @@ func (q *MySQLQueue) Enqueue(message *models.Message) error {
 		INSERT INTO messages (
 			id, from_email, to_emails, cc_emails, bcc_emails, 
 			subject, html_body, text_body, headers, attachments, 
-			metadata, campaign_id, user_id, workspace_id, status, queued_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			metadata, campaign_id, notification_id, user_id, provider_id, status, queued_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`
 
 	_, err := q.db.Exec(query,
@@ -68,8 +68,9 @@ func (q *MySQLQueue) Enqueue(message *models.Message) error {
 		string(attachments),
 		string(metadata),
 		message.CampaignID,
+		message.NotificationID,
 		message.UserID,
-		message.WorkspaceID,
+		message.ProviderID,
 		message.Status,
 		message.QueuedAt,
 	)
@@ -87,7 +88,7 @@ func (q *MySQLQueue) Dequeue(batchSize int) ([]*models.Message, error) {
 	query := `
 		SELECT id, from_email, to_emails, cc_emails, bcc_emails,
 			subject, html_body, text_body, headers, attachments,
-			metadata, campaign_id, user_id, workspace_id, status, queued_at, processed_at, error, retry_count
+			metadata, campaign_id, notification_id, user_id, provider_id, status, queued_at, processed_at, error, retry_count
 		FROM messages
 		WHERE status = 'queued' OR (status = 'failed' AND retry_count < 3)
 		ORDER BY queued_at ASC
@@ -124,8 +125,9 @@ func (q *MySQLQueue) Dequeue(batchSize int) ([]*models.Message, error) {
 			&attachments,
 			&metadata,
 			&msg.CampaignID,
+			&msg.NotificationID,
 			&msg.UserID,
-			&msg.WorkspaceID,
+			&msg.ProviderID,
 			&msg.Status,
 			&msg.QueuedAt,
 			&processedAt,
@@ -201,11 +203,65 @@ func (q *MySQLQueue) UpdateStatus(id string, status models.MessageStatus, err er
 	return dbErr
 }
 
+func (q *MySQLQueue) UpdateStatusWithProvider(id string, status models.MessageStatus, providerID string, err error) error {
+	log.Printf("DEBUG: UpdateStatusWithProvider called - id=%s, status=%s, provider=%s, hasError=%v", id, status, providerID, err != nil)
+	
+	// For sent messages, also update sent_at
+	query := `
+		UPDATE messages 
+		SET status = ?, processed_at = ?, sent_at = ?, provider_id = ?, error = ?, retry_count = retry_count + 1
+		WHERE id = ?
+	`
+
+	var errorMsg sql.NullString
+	if err != nil {
+		errorMsg.Valid = true
+		errorMsg.String = err.Error()
+	}
+
+	var provider sql.NullString
+	if providerID != "" {
+		provider.Valid = true
+		provider.String = providerID
+		log.Printf("DEBUG: Setting provider_id to '%s'", providerID)
+	} else {
+		log.Printf("DEBUG: Provider ID is empty, setting NULL")
+	}
+
+	now := time.Now()
+	var sentAt sql.NullTime
+	if status == models.StatusSent {
+		sentAt.Valid = true
+		sentAt.Time = now
+	}
+
+	log.Printf("DEBUG: Executing SQL with params - status=%s, processed_at=%v, sent_at=%v, provider=%v, error=%v, id=%s", 
+		status, now, sentAt, provider, errorMsg, id)
+
+	result, dbErr := q.db.Exec(query, status, now, sentAt, provider, errorMsg, id)
+	if dbErr != nil {
+		log.Printf("ERROR: UpdateStatusWithProvider failed - %v", dbErr)
+		return dbErr
+	}
+	
+	rows, _ := result.RowsAffected()
+	log.Printf("DEBUG: UpdateStatusWithProvider updated %d rows for message %s", rows, id)
+	
+	// Verify the update
+	var checkProvider sql.NullString
+	checkErr := q.db.QueryRow("SELECT provider_id FROM messages WHERE id = ?", id).Scan(&checkProvider)
+	if checkErr == nil {
+		log.Printf("DEBUG: After update, provider_id in DB is: %v (valid=%v)", checkProvider.String, checkProvider.Valid)
+	}
+	
+	return nil
+}
+
 func (q *MySQLQueue) Get(id string) (*models.Message, error) {
 	query := `
 		SELECT id, from_email, to_emails, cc_emails, bcc_emails,
 			subject, html_body, text_body, headers, attachments,
-			metadata, campaign_id, user_id, workspace_id, status, queued_at, processed_at, error
+			metadata, campaign_id, notification_id, user_id, provider_id, status, queued_at, processed_at, error
 		FROM messages
 		WHERE id = ?
 	`
@@ -228,8 +284,9 @@ func (q *MySQLQueue) Get(id string) (*models.Message, error) {
 		&attachments,
 		&metadata,
 		&msg.CampaignID,
+		&msg.NotificationID,
 		&msg.UserID,
-		&msg.WorkspaceID,
+		&msg.ProviderID,
 		&msg.Status,
 		&msg.QueuedAt,
 		&processedAt,
@@ -365,14 +422,14 @@ func (q *MySQLQueue) GetMessages(limit, offset int, status string) ([]*models.Me
 	return messages, nil
 }
 
-// GetSentCountsByWorkspaceAndSender returns sent message counts for the last 24 hours
+// GetSentCountsByProviderAndSender returns sent message counts for the last 24 hours
 func (q *MySQLQueue) GetSentCountsByWorkspaceAndSender() (map[string]map[string]int, error) {
 	query := `
-		SELECT workspace_id, from_email, COUNT(*) as count
+		SELECT provider_id, from_email, COUNT(*) as count
 		FROM messages
 		WHERE status = 'sent' 
 		  AND processed_at >= DATE_SUB(NOW(), INTERVAL 24 HOUR)
-		GROUP BY workspace_id, from_email
+		GROUP BY provider_id, from_email
 	`
 
 	rows, err := q.db.Query(query)
@@ -381,23 +438,23 @@ func (q *MySQLQueue) GetSentCountsByWorkspaceAndSender() (map[string]map[string]
 	}
 	defer rows.Close()
 
-	// Structure: workspace_id -> sender_email -> count
+	// Structure: provider_id -> sender_email -> count
 	counts := make(map[string]map[string]int)
 
 	for rows.Next() {
-		var workspaceID, fromEmail string
+		var providerID, fromEmail string
 		var count int
 
-		if err := rows.Scan(&workspaceID, &fromEmail, &count); err != nil {
+		if err := rows.Scan(&providerID, &fromEmail, &count); err != nil {
 			return nil, err
 		}
 
-		log.Printf("DEBUG: Found DB record: workspace='%s', from='%s', count=%d", workspaceID, fromEmail, count)
+		log.Printf("DEBUG: Found DB record: provider='%s', from='%s', count=%d", providerID, fromEmail, count)
 
-		if counts[workspaceID] == nil {
-			counts[workspaceID] = make(map[string]int)
+		if counts[providerID] == nil {
+			counts[providerID] = make(map[string]int)
 		}
-		counts[workspaceID][fromEmail] = count
+		counts[providerID][fromEmail] = count
 	}
 
 	return counts, nil

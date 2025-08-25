@@ -18,9 +18,10 @@ type Message struct {
 	Metadata    map[string]interface{} `json:"metadata,omitempty"`
 	
 	// Campaign and user tracking
-	CampaignID  string `json:"campaign_id,omitempty"`
-	UserID      string `json:"user_id,omitempty"`
-	WorkspaceID string `json:"workspace_id,omitempty"`
+	CampaignID     string `json:"campaign_id,omitempty"`
+	NotificationID string `json:"notification_id,omitempty"`
+	UserID         string `json:"user_id,omitempty"`
+	ProviderID     string `json:"provider_id,omitempty"`
 	
 	Status      MessageStatus          `json:"status"`
 	QueuedAt    time.Time              `json:"queued_at"`

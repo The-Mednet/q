@@ -11,9 +11,6 @@ import {
   Typography,
   AppBar,
   Toolbar,
-  Avatar,
-  IconButton,
-  Badge,
   Fade,
   useTheme
 } from '@mui/material';
@@ -22,8 +19,6 @@ import {
   CloudQueue as ProvidersIcon,
   Hub as PoolsIcon,
   Email as MessagesIcon,
-  Notifications as NotificationsIcon,
-  Settings as SettingsIcon,
   Speed as SpeedIcon
 } from '@mui/icons-material';
 
@@ -114,49 +109,6 @@ function DashboardLayout({
                 Email Infrastructure Management
               </Typography>
             </Box>
-          </Box>
-          
-          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-            <IconButton
-              size="large"
-              aria-label="Notifications"
-              sx={{
-                backgroundColor: theme.palette.grey[100],
-                '&:hover': {
-                  backgroundColor: theme.palette.grey[200],
-                },
-              }}
-            >
-              <Badge badgeContent={3} color="error">
-                <NotificationsIcon />
-              </Badge>
-            </IconButton>
-            
-            <IconButton
-              size="large"
-              aria-label="Settings"
-              sx={{
-                backgroundColor: theme.palette.grey[100],
-                '&:hover': {
-                  backgroundColor: theme.palette.grey[200],
-                },
-              }}
-            >
-              <SettingsIcon />
-            </IconButton>
-            
-            <Avatar 
-              sx={{ 
-                ml: 2,
-                width: 42,
-                height: 42,
-                bgcolor: theme.palette.primary.main,
-                fontWeight: 600,
-                boxShadow: '0 4px 12px rgba(48, 59, 139, 0.2)',
-              }}
-            >
-              M
-            </Avatar>
           </Box>
         </Toolbar>
       </AppBar>

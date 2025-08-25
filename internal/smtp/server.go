@@ -3,6 +3,7 @@ package smtp
 import (
 	"crypto/subtle"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -157,24 +158,48 @@ func (s *Session) Mail(from string, opts *smtp.MailOptions) error {
 	
 	s.from = from
 
-	// Determine workspace for this sender
-	var workspaceID string
+	// Determine provider for this sender and check if domain rewriting is needed
+	var providerID string
+	var actualFrom string = from
+	
 	if s.workspaceManager != nil {
-		if workspace, err := s.workspaceManager.GetWorkspaceForSender(from); err == nil {
-			workspaceID = workspace.ID
+		result, err := s.workspaceManager.GetWorkspaceForSenderWithRewrite(from)
+		if err == nil && result != nil {
+			providerID = result.Workspace.ID
+			
+			// If domain rewriting is needed, modify the sender address
+			if result.NeedsDomainRewrite {
+				// Get the primary domain from the selected workspace
+				primaryDomain := result.Workspace.GetPrimaryDomain()
+				if primaryDomain != "" {
+					// Extract username from original sender
+					atIndex := strings.LastIndex(from, "@")
+					if atIndex > 0 {
+						username := from[:atIndex]
+						actualFrom = username + "@" + primaryDomain
+						log.Printf("Rewriting sender domain: %s -> %s (using provider %s)", from, actualFrom, providerID)
+					}
+				}
+			}
 		} else {
 			log.Printf("Warning: Could not route message from %s: %v", from, err)
 		}
 	}
 
 	s.message = &models.Message{
-		ID:          uuid.New().String(),
-		From:        from,
-		WorkspaceID: workspaceID,
-		Status:      models.StatusQueued,
-		QueuedAt:    time.Now(),
-		Headers:     make(map[string]string),
-		Metadata:    make(map[string]interface{}),
+		ID:         uuid.New().String(),
+		From:       actualFrom, // Use the potentially rewritten sender address
+		ProviderID: providerID,
+		Status:     models.StatusQueued,
+		QueuedAt:   time.Now(),
+		Headers:    make(map[string]string),
+		Metadata:   make(map[string]interface{}),
+	}
+	
+	// Store original sender in metadata if it was rewritten
+	if actualFrom != from {
+		s.message.Metadata["original_sender"] = from
+		s.message.Metadata["domain_rewritten"] = true
 	}
 	return nil
 }
@@ -290,18 +315,47 @@ func (s *Session) parseMessage(data []byte) error {
 					s.message.CC = parseAddresses(value)
 				case "bcc":
 					s.message.BCC = parseAddresses(value)
+				case "x-mc-tags":
+					// Store the original header for visibility
+					s.message.Headers["X-MC-Tags"] = value
+					// Parse tags array - could be JSON array or comma-separated
+					tags := parseTagsHeader(value)
+					if len(tags) > 0 {
+						if s.message.Metadata == nil {
+							s.message.Metadata = make(map[string]interface{})
+						}
+						s.message.Metadata["tags"] = tags
+					}
+				case "x-mc-metadata":
+					// Store the original header for visibility
+					s.message.Headers["X-MC-Metadata"] = value
+					// Parse JSON metadata
+					if err := parseMCMetadata(value, s.message); err != nil {
+						log.Printf("Warning: Failed to parse X-MC-Metadata: %v", err)
+					}
 				case "x-campaign-id":
+					// Legacy support - still accept direct header if provided
 					if err := validation.ValidateCampaignID(value); err != nil {
 						log.Printf("Invalid campaign ID: %v", err)
 						continue // Skip invalid campaign ID
 					}
-					s.message.CampaignID = value
+					if s.message.CampaignID == "" { // Don't override if already set from X-MC-Metadata
+						s.message.CampaignID = value
+					}
+				case "x-notification-id":
+					// Legacy support - still accept direct header if provided
+					if value != "" && s.message.NotificationID == "" { // Don't override if already set from X-MC-Metadata
+						s.message.NotificationID = value
+					}
 				case "x-user-id":
+					// Legacy support - still accept direct header if provided
 					if err := validation.ValidateUserID(value); err != nil {
 						log.Printf("Invalid user ID: %v", err)
 						continue // Skip invalid user ID
 					}
-					s.message.UserID = value
+					if s.message.UserID == "" { // Don't override if already set from X-MC-Metadata
+						s.message.UserID = value
+					}
 				default:
 					// Apply header modifications based on workspace provider
 					modifiedValue := s.modifyHeaderForProvider(key, value)
@@ -368,8 +422,8 @@ func (s *Session) modifyHeaderForProvider(headerName, headerValue string) string
 		log.Printf("DEBUG: s.message is nil, returning original value")
 		return headerValue
 	}
-	if s.message.WorkspaceID == "" {
-		log.Printf("DEBUG: s.message.WorkspaceID is empty, returning original value")
+	if s.message.ProviderID == "" {
+		log.Printf("DEBUG: s.message.ProviderID is empty, returning original value")
 		return headerValue
 	}
 	if s.workspaceManager == nil {
@@ -509,8 +563,8 @@ func (s *Session) addMissingHeaders() {
 		log.Printf("DEBUG: s.message is nil, skipping addMissingHeaders")
 		return
 	}
-	if s.message.WorkspaceID == "" {
-		log.Printf("DEBUG: s.message.WorkspaceID is empty, skipping addMissingHeaders")
+	if s.message.ProviderID == "" {
+		log.Printf("DEBUG: s.message.ProviderID is empty, skipping addMissingHeaders")
 		return
 	}
 	if s.workspaceManager == nil {
@@ -641,4 +695,80 @@ func parseAddresses(addresses string) []string {
 
 func isHTML(contentType string) bool {
 	return strings.Contains(strings.ToLower(contentType), "text/html")
+}
+
+// parseTagsHeader parses X-MC-Tags header which can be JSON array or comma-separated values
+func parseTagsHeader(value string) []string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil
+	}
+	
+	// Try parsing as JSON array first
+	if strings.HasPrefix(value, "[") {
+		var tags []string
+		if err := json.Unmarshal([]byte(value), &tags); err == nil {
+			return tags
+		}
+	}
+	
+	// Fall back to comma-separated values
+	parts := strings.Split(value, ",")
+	tags := make([]string, 0, len(parts))
+	for _, part := range parts {
+		tag := strings.TrimSpace(part)
+		if tag != "" {
+			tags = append(tags, tag)
+		}
+	}
+	return tags
+}
+
+// parseMCMetadata parses X-MC-Metadata JSON and populates message fields
+func parseMCMetadata(jsonStr string, msg *models.Message) error {
+	var metadata map[string]interface{}
+	if err := json.Unmarshal([]byte(jsonStr), &metadata); err != nil {
+		return err
+	}
+	
+	// Extract known fields based on the PHP code structure
+	if invitationID, ok := getStringFromInterface(metadata["invitation_id"]); ok && invitationID != "" {
+		msg.CampaignID = invitationID // Map invitation_id to campaign_id
+	}
+	
+	if emailType, ok := getStringFromInterface(metadata["email_type"]); ok && emailType != "" {
+		msg.NotificationID = emailType // Map email_type to notification_id
+	}
+	
+	if dispatchID, ok := getStringFromInterface(metadata["invitation_dispatch_id"]); ok && dispatchID != "" {
+		if msg.Metadata == nil {
+			msg.Metadata = make(map[string]interface{})
+		}
+		msg.Metadata["invitation_dispatch_id"] = dispatchID
+	}
+	
+	// Store all metadata for reference
+	if msg.Metadata == nil {
+		msg.Metadata = make(map[string]interface{})
+	}
+	msg.Metadata["mc_metadata"] = metadata
+	
+	return nil
+}
+
+// getStringFromInterface safely converts interface{} to string
+func getStringFromInterface(v interface{}) (string, bool) {
+	if v == nil {
+		return "", false
+	}
+	switch s := v.(type) {
+	case string:
+		return s, true
+	case float64:
+		return fmt.Sprintf("%.0f", s), true
+	case int:
+		return fmt.Sprintf("%d", s), true
+	default:
+		return fmt.Sprintf("%v", s), true
+	}
 }

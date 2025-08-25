@@ -217,7 +217,7 @@ func (s *Service) upsertRecipientInTransaction(tx *sql.Tx, email string, message
 	// Check if recipient exists
 	var recipientID int64
 	query := `SELECT id FROM recipients WHERE email_address = ? AND workspace_id = ?`
-	err := tx.QueryRow(query, email, message.WorkspaceID).Scan(&recipientID)
+	err := tx.QueryRow(query, email, message.ProviderID).Scan(&recipientID)
 
 	if err == sql.ErrNoRows {
 		// Create new recipient
@@ -227,7 +227,7 @@ func (s *Service) upsertRecipientInTransaction(tx *sql.Tx, email string, message
 		`
 		result, err := tx.Exec(insertQuery,
 			email,
-			message.WorkspaceID,
+			message.ProviderID,
 			message.UserID,
 			message.CampaignID,
 			models.RecipientStatusActive,

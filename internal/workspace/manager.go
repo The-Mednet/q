@@ -2,225 +2,23 @@ package workspace
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log"
-	"os"
+	"strings"
 	"sync"
 
 	"relay/internal/config"
 )
 
-// LoadBalancer interface for load balancing integration
-type LoadBalancer interface {
-	SelectWorkspace(ctx context.Context, senderEmail string) (*config.WorkspaceConfig, error)
-}
-
-// Manager handles workspace configuration and management
+// Manager manages workspace configurations and routing
 type Manager struct {
 	workspaces        map[string]*config.WorkspaceConfig
-	domainToWorkspace map[string]string
+	domainToWorkspace map[string]string // Maps domain to workspace ID
 	loadBalancer      LoadBalancer // Optional load balancer for advanced routing
 	mu                sync.RWMutex
 }
 
-// NewManager creates a new workspace manager from a configuration file
-func NewManager(configFile string) (*Manager, error) {
-	manager := &Manager{
-		workspaces:       make(map[string]*config.WorkspaceConfig),
-		domainToWorkspace: make(map[string]string),
-	}
-	
-	if err := manager.loadWorkspaces(configFile); err != nil {
-		return nil, fmt.Errorf("failed to load workspaces: %w", err)
-	}
-	
-	return manager, nil
-}
-
-// NewManagerFromJSON creates a new workspace manager from JSON data
-func NewManagerFromJSON(jsonData []byte) (*Manager, error) {
-	manager := &Manager{
-		workspaces:       make(map[string]*config.WorkspaceConfig),
-		domainToWorkspace: make(map[string]string),
-	}
-	
-	var workspaces []config.WorkspaceConfig
-	if err := json.Unmarshal(jsonData, &workspaces); err != nil {
-		return nil, fmt.Errorf("failed to parse workspace config from JSON: %w", err)
-	}
-	
-	// Process and store workspaces
-	for _, ws := range workspaces {
-		workspace := ws // Create a copy to avoid pointer issues
-		
-		// Handle backward compatibility: if Domain is set but Domains is not, use Domain
-		if workspace.Domain != "" && len(workspace.Domains) == 0 {
-			workspace.Domains = []string{workspace.Domain}
-		}
-		
-		manager.workspaces[workspace.ID] = &workspace
-		
-		// Map all domains to workspace ID
-		for _, domain := range workspace.Domains {
-			manager.domainToWorkspace[domain] = workspace.ID
-		}
-		
-		log.Printf("Loaded workspace: ID='%s', Domains=%v, Gmail=%v, Mailgun=%v, Mandrill=%v",
-			workspace.ID, workspace.Domains, 
-			workspace.Gmail != nil, workspace.Mailgun != nil, workspace.Mandrill != nil)
-	}
-	
-	log.Printf("Successfully loaded %d workspaces", len(manager.workspaces))
-	return manager, nil
-}
-
-// loadWorkspaces loads workspace configuration from file or environment
-func (m *Manager) loadWorkspaces(configFile string) error {
-	var workspaces []config.WorkspaceConfig
-	
-	// First try to load from environment variable (for production/container deployments)
-	if envConfig := os.Getenv("WORKSPACE_CONFIG_JSON"); envConfig != "" {
-		log.Println("Loading workspace configuration from environment variable")
-		if err := json.Unmarshal([]byte(envConfig), &workspaces); err != nil {
-			return fmt.Errorf("failed to parse workspace config from environment: %w", err)
-		}
-	} else if configFile != "" {
-		// Fall back to file-based loading
-		log.Printf("Loading workspace configuration from file: %s", configFile)
-		data, err := os.ReadFile(configFile)
-		if err != nil {
-			return fmt.Errorf("failed to read workspace config file %s: %w", configFile, err)
-		}
-		
-		if err := json.Unmarshal(data, &workspaces); err != nil {
-			return fmt.Errorf("failed to parse workspace config file: %w", err)
-		}
-	} else {
-		return fmt.Errorf("no workspace configuration provided")
-	}
-	
-	if len(workspaces) == 0 {
-		return fmt.Errorf("no workspaces found in configuration")
-	}
-	
-	// Process and validate workspaces
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	
-	for i := range workspaces {
-		workspace := &workspaces[i]
-		
-		// Validate required fields
-		if workspace.ID == "" {
-			return fmt.Errorf("workspace %d missing required ID", i)
-		}
-		
-		// Handle backward compatibility: if Domain is set but Domains is not, use Domain
-		if workspace.Domain != "" && len(workspace.Domains) == 0 {
-			workspace.Domains = []string{workspace.Domain}
-		}
-		
-		// Ensure at least one domain is configured
-		if len(workspace.Domains) == 0 {
-			return fmt.Errorf("workspace %s missing required domains", workspace.ID)
-		}
-		
-		// Ensure at least one provider is configured and enabled
-		hasEnabledProvider := false
-		if workspace.Gmail != nil && workspace.Gmail.Enabled {
-			hasEnabledProvider = true
-			
-			// Validate Gmail configuration (skip for database-stored credentials)
-			if workspace.Gmail.ServiceAccountFile == "" && workspace.Gmail.ServiceAccountEnv == "" {
-				// This is OK if credentials are stored in the database
-				log.Printf("Workspace %s Gmail provider will use database-stored credentials", workspace.ID)
-			}
-			
-			// Check if service account file exists (only if using file-based config)
-			if workspace.Gmail.ServiceAccountFile != "" {
-				if _, err := os.Stat(workspace.Gmail.ServiceAccountFile); os.IsNotExist(err) {
-					log.Printf("Warning: Service account file for workspace %s does not exist: %s", 
-						workspace.ID, workspace.Gmail.ServiceAccountFile)
-				}
-			}
-			
-			// Check if environment variable is set (only if using env-based config)
-			if workspace.Gmail.ServiceAccountEnv != "" {
-				if os.Getenv(workspace.Gmail.ServiceAccountEnv) == "" {
-					log.Printf("Warning: Service account env var %s for workspace %s is not set", 
-						workspace.Gmail.ServiceAccountEnv, workspace.ID)
-				}
-			}
-		}
-		
-		if workspace.Mailgun != nil && workspace.Mailgun.Enabled {
-			hasEnabledProvider = true
-			
-			// Validate Mailgun configuration
-			if workspace.Mailgun.APIKey == "" {
-				return fmt.Errorf("workspace %s has Mailgun enabled but no API key specified", workspace.ID)
-			}
-			
-			// Set default base URL if not specified
-			if workspace.Mailgun.BaseURL == "" {
-				workspace.Mailgun.BaseURL = "https://api.mailgun.net/v3"
-			}
-		}
-		
-		if workspace.Mandrill != nil && workspace.Mandrill.Enabled {
-			hasEnabledProvider = true
-			
-			// Validate Mandrill configuration
-			if workspace.Mandrill.APIKey == "" {
-				return fmt.Errorf("workspace %s has Mandrill enabled but no API key specified", workspace.ID)
-			}
-			
-			// Set default base URL if not specified
-			if workspace.Mandrill.BaseURL == "" {
-				workspace.Mandrill.BaseURL = "https://mandrillapp.com/api/1.0"
-			}
-		}
-		
-		if !hasEnabledProvider {
-			return fmt.Errorf("workspace %s has no enabled providers (Gmail, Mailgun, or Mandrill)", workspace.ID)
-		}
-		
-		// Set default display name if not provided
-		if workspace.DisplayName == "" {
-			if len(workspace.Domains) > 0 {
-				workspace.DisplayName = fmt.Sprintf("%s Workspace", workspace.Domains[0])
-			} else {
-				workspace.DisplayName = fmt.Sprintf("Workspace %s", workspace.ID)
-			}
-		}
-		
-		// Set default rate limits if not specified
-		if workspace.RateLimits.WorkspaceDaily == 0 {
-			workspace.RateLimits.WorkspaceDaily = 2000 // Default daily limit
-		}
-		if workspace.RateLimits.PerUserDaily == 0 {
-			workspace.RateLimits.PerUserDaily = 200 // Default per-user limit
-		}
-		
-		// Store workspace
-		m.workspaces[workspace.ID] = workspace
-		
-		// Map all domains to workspace ID
-		for _, domain := range workspace.Domains {
-			m.domainToWorkspace[domain] = workspace.ID
-		}
-		
-		log.Printf("Loaded workspace: ID='%s', Domains=%v, Gmail=%t, Mailgun=%t, Mandrill=%t", 
-			workspace.ID, workspace.Domains, 
-			workspace.Gmail != nil && workspace.Gmail.Enabled,
-			workspace.Mailgun != nil && workspace.Mailgun.Enabled,
-			workspace.Mandrill != nil && workspace.Mandrill.Enabled)
-	}
-	
-	log.Printf("Successfully loaded %d workspaces", len(m.workspaces))
-	return nil
-}
+// JSON loading functions removed - using database only
 
 // GetWorkspaceByDomain returns a workspace for the given domain
 func (m *Manager) GetWorkspaceByDomain(domain string) (*config.WorkspaceConfig, error) {
@@ -231,40 +29,42 @@ func (m *Manager) GetWorkspaceByDomain(domain string) (*config.WorkspaceConfig, 
 	if domain == "" {
 		return nil, fmt.Errorf("domain cannot be empty")
 	}
-	
+
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	
-	// Check if maps are initialized
-	if m.domainToWorkspace == nil {
-		log.Printf("Warning: domainToWorkspace map is nil")
-		return nil, fmt.Errorf("workspace manager not properly initialized")
+
+	// Try direct domain match first
+	if workspaceID, exists := m.domainToWorkspace[domain]; exists {
+		workspace := m.workspaces[workspaceID]
+		if workspace == nil {
+			// Defensive: workspace ID exists in map but workspace is nil
+			log.Printf("Warning: workspace ID %s exists in domain map but workspace is nil", workspaceID)
+			return nil, fmt.Errorf("workspace configuration corrupted for domain %s", domain)
+		}
+		return workspace, nil
 	}
-	if m.workspaces == nil {
-		log.Printf("Warning: workspaces map is nil")
-		return nil, fmt.Errorf("workspace manager not properly initialized")
+
+	// Try pattern matching for wildcard domains
+	for configuredDomain, workspaceID := range m.domainToWorkspace {
+		if strings.HasPrefix(configuredDomain, "*.") {
+			// Wildcard domain like *.example.com
+			baseDomain := configuredDomain[2:] // Remove *.
+			if strings.HasSuffix(domain, baseDomain) {
+				workspace := m.workspaces[workspaceID]
+				if workspace == nil {
+					// Defensive: workspace ID exists but workspace is nil
+					log.Printf("Warning: workspace ID %s exists for wildcard but workspace is nil", workspaceID)
+					continue
+				}
+				return workspace, nil
+			}
+		}
 	}
-	
-	workspaceID, exists := m.domainToWorkspace[domain]
-	if !exists {
-		return nil, fmt.Errorf("no workspace found for domain: %s", domain)
-	}
-	
-	workspace, exists := m.workspaces[workspaceID]
-	if !exists {
-		return nil, fmt.Errorf("workspace data not found for ID: %s", workspaceID)
-	}
-	
-	// Defensive check for nil workspace
-	if workspace == nil {
-		log.Printf("Warning: Workspace %s is nil in storage", workspaceID)
-		return nil, fmt.Errorf("workspace %s is corrupted (nil)", workspaceID)
-	}
-	
-	return workspace, nil
+
+	return nil, fmt.Errorf("no workspace found for domain: %s", domain)
 }
 
-// GetWorkspaceByID returns a workspace for the given ID
+// GetWorkspaceByID returns a workspace by its ID
 func (m *Manager) GetWorkspaceByID(workspaceID string) (*config.WorkspaceConfig, error) {
 	// Defensive programming: validate manager and input
 	if m == nil {
@@ -273,88 +73,188 @@ func (m *Manager) GetWorkspaceByID(workspaceID string) (*config.WorkspaceConfig,
 	if workspaceID == "" {
 		return nil, fmt.Errorf("workspace ID cannot be empty")
 	}
-	
+
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	
-	// Check if workspaces map is initialized
-	if m.workspaces == nil {
-		log.Printf("Warning: workspaces map is nil")
-		return nil, fmt.Errorf("workspace manager not properly initialized")
-	}
-	
+
 	workspace, exists := m.workspaces[workspaceID]
 	if !exists {
 		return nil, fmt.Errorf("workspace not found: %s", workspaceID)
 	}
 	
-	// Defensive check for nil workspace
+	// Defensive: check if workspace is nil even though it exists in map
 	if workspace == nil {
-		log.Printf("Warning: Workspace %s is nil in storage", workspaceID)
-		return nil, fmt.Errorf("workspace %s is corrupted (nil)", workspaceID)
+		log.Printf("Warning: workspace %s exists in map but is nil", workspaceID)
+		return nil, fmt.Errorf("workspace configuration is nil for ID: %s", workspaceID)
 	}
-	
+
 	return workspace, nil
 }
 
 // GetAllWorkspaces returns all configured workspaces
 func (m *Manager) GetAllWorkspaces() map[string]*config.WorkspaceConfig {
-	// Defensive programming: validate manager
+	// Defensive programming: handle nil manager
 	if m == nil {
-		log.Printf("Warning: workspace manager is nil - returning empty map")
+		log.Printf("Warning: GetAllWorkspaces called on nil manager")
 		return make(map[string]*config.WorkspaceConfig)
 	}
-	
+
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	
-	// Check if workspaces map is initialized
-	if m.workspaces == nil {
-		log.Printf("Warning: workspaces map is nil - returning empty map")
-		return make(map[string]*config.WorkspaceConfig)
-	}
-	
-	// Return a copy to prevent external modification
+
+	// Create a copy to avoid concurrent modification
 	result := make(map[string]*config.WorkspaceConfig)
-	for k, v := range m.workspaces {
-		// Skip nil workspaces to prevent issues
-		if v != nil {
-			result[k] = v
-		} else {
-			log.Printf("Warning: Skipping nil workspace with ID %s", k)
+	for id, workspace := range m.workspaces {
+		// Defensive: skip nil workspaces
+		if workspace == nil {
+			log.Printf("Warning: workspace %s is nil in manager", id)
+			continue
 		}
+		result[id] = workspace
 	}
-	
+
 	return result
 }
 
 // GetWorkspaceIDs returns all workspace IDs
 func (m *Manager) GetWorkspaceIDs() []string {
+	// Defensive programming: handle nil manager
+	if m == nil {
+		log.Printf("Warning: GetWorkspaceIDs called on nil manager")
+		return []string{}
+	}
+
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	
+
 	ids := make([]string, 0, len(m.workspaces))
 	for id := range m.workspaces {
 		ids = append(ids, id)
 	}
-	
 	return ids
 }
 
 // GetDomains returns all configured domains
 func (m *Manager) GetDomains() []string {
+	// Defensive programming: handle nil manager
+	if m == nil {
+		log.Printf("Warning: GetDomains called on nil manager")
+		return []string{}
+	}
+
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	
+
 	domains := make([]string, 0, len(m.domainToWorkspace))
 	for domain := range m.domainToWorkspace {
 		domains = append(domains, domain)
 	}
-	
 	return domains
 }
 
-// GetWorkspaceForSender determines which workspace should handle a message from the given sender
+// WorkspaceSelectionResult contains the result of workspace selection including rewrite information
+type WorkspaceSelectionResult struct {
+	Workspace          *config.WorkspaceConfig
+	NeedsDomainRewrite bool
+	OriginalDomain     string
+	RewrittenDomain    string
+}
+
+// GetWorkspaceForSenderWithRewrite determines the workspace for a sender and whether domain rewriting is needed
+func (m *Manager) GetWorkspaceForSenderWithRewrite(senderEmail string) (*WorkspaceSelectionResult, error) {
+	// Defensive programming: validate manager and input
+	if m == nil {
+		return nil, fmt.Errorf("workspace manager is nil")
+	}
+	if senderEmail == "" {
+		return nil, fmt.Errorf("sender email cannot be empty")
+	}
+
+	// Extract domain from sender email
+	atIndex := strings.LastIndex(senderEmail, "@")
+	if atIndex < 0 {
+		return nil, fmt.Errorf("invalid sender email format: %s", senderEmail)
+	}
+	domain := senderEmail[atIndex+1:]
+
+	// First, try direct domain matching
+	workspace, err := m.GetWorkspaceByDomain(domain)
+	if err == nil && workspace != nil {
+		log.Printf("Direct domain match found: workspace %s for domain %s", workspace.ID, domain)
+		return &WorkspaceSelectionResult{
+			Workspace:          workspace,
+			NeedsDomainRewrite: false,
+			OriginalDomain:     domain,
+			RewrittenDomain:    domain,
+		}, nil
+	}
+
+	// If we have a load balancer, try pool-based selection
+	if m.loadBalancer != nil {
+		// Try load balancer selection for specific pools
+		log.Printf("No direct domain match for %s, checking load balancing pools", domain)
+		workspace, err := m.loadBalancer.SelectWorkspace(context.Background(), senderEmail)
+		if err == nil && workspace != nil {
+			log.Printf("Load balancer selected workspace %s for sender %s", workspace.ID, senderEmail)
+			// For load-balanced selection from pools, domain stays the same
+			return &WorkspaceSelectionResult{
+				Workspace:          workspace,
+				NeedsDomainRewrite: false,
+				OriginalDomain:     domain,
+				RewrittenDomain:    domain,
+			}, nil
+		}
+
+		// No specific pool match, try default pool
+		log.Printf("No specific pool match for %s: %v", senderEmail, err)
+		workspace, err = m.loadBalancer.SelectFromDefaultPool(context.Background())
+		if err == nil && workspace != nil {
+			// Get the primary domain from the selected workspace
+			primaryDomain := workspace.GetPrimaryDomain()
+			if primaryDomain == "" && len(workspace.Domains) > 0 {
+				primaryDomain = workspace.Domains[0]
+			}
+			
+			log.Printf("Using default pool: selected workspace %s for sender %s (domain will be rewritten)", workspace.ID, senderEmail)
+			return &WorkspaceSelectionResult{
+				Workspace:          workspace,
+				NeedsDomainRewrite: true,
+				OriginalDomain:     domain,
+				RewrittenDomain:    primaryDomain,
+			}, nil
+		}
+	}
+
+	return nil, fmt.Errorf("no workspace found for sender: %s", senderEmail)
+}
+
+// domainMatchesWorkspace checks if a domain matches any of the workspace's configured domains
+func (m *Manager) domainMatchesWorkspace(domain string, workspace *config.WorkspaceConfig) bool {
+	// Defensive programming: validate inputs
+	if workspace == nil {
+		log.Printf("Warning: domainMatchesWorkspace called with nil workspace")
+		return false
+	}
+	if domain == "" {
+		return false
+	}
+
+	for _, wsDomain := range workspace.Domains {
+		if wsDomain == domain {
+			return true
+		}
+		// Check wildcard domains
+		if strings.HasPrefix(wsDomain, "*.") {
+			baseDomain := wsDomain[2:]
+			if strings.HasSuffix(domain, baseDomain) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// GetWorkspaceForSender determines the appropriate workspace for a given sender email
 func (m *Manager) GetWorkspaceForSender(senderEmail string) (*config.WorkspaceConfig, error) {
 	// Defensive programming: validate manager and input
 	if m == nil {
@@ -363,46 +263,47 @@ func (m *Manager) GetWorkspaceForSender(senderEmail string) (*config.WorkspaceCo
 	if senderEmail == "" {
 		return nil, fmt.Errorf("sender email cannot be empty")
 	}
-	
+
 	// Extract domain from sender email
-	atIndex := len(senderEmail) - 1
-	for i := len(senderEmail) - 1; i >= 0; i-- {
-		if senderEmail[i] == '@' {
-			atIndex = i
-			break
-		}
-	}
-	
-	if atIndex == len(senderEmail) - 1 || atIndex == 0 {
+	atIndex := strings.LastIndex(senderEmail, "@")
+	if atIndex < 0 {
 		return nil, fmt.Errorf("invalid sender email format: %s", senderEmail)
 	}
-	
 	domain := senderEmail[atIndex+1:]
-	
-	// Try load balancer first if available
+
+	// First, try direct domain matching
+	workspace, err := m.GetWorkspaceByDomain(domain)
+	if err == nil && workspace != nil {
+		return workspace, nil
+	}
+
+	// If we have a load balancer, use it for advanced routing
 	if m.loadBalancer != nil {
-		ctx := context.Background()
-		workspace, err := m.loadBalancer.SelectWorkspace(ctx, senderEmail)
+		log.Printf("No direct domain match for %s, using load balancer", domain)
+		workspace, err := m.loadBalancer.SelectWorkspace(context.Background(), senderEmail)
+		// Defensive: check both error and workspace to prevent nil pointer dereference
 		if err == nil && workspace != nil {
 			log.Printf("Load balancer selected workspace %s for sender %s", workspace.ID, senderEmail)
 			return workspace, nil
 		}
-		// Log warning but continue - don't fail on load balancer errors
-		log.Printf("Warning: Load balancer selection failed for %s, falling back to direct mapping: %v", senderEmail, err)
+		if err != nil {
+			log.Printf("Load balancer selection failed for %s: %v", senderEmail, err)
+		} else {
+			log.Printf("Load balancer returned nil workspace for %s", senderEmail)
+		}
 	}
-	
-	// Fall back to direct domain mapping
-	return m.GetWorkspaceByDomain(domain)
+
+	return nil, fmt.Errorf("no workspace found for sender: %s", senderEmail)
 }
 
 // SetLoadBalancer sets the load balancer for advanced routing
 func (m *Manager) SetLoadBalancer(lb LoadBalancer) {
 	// Defensive programming: validate manager
 	if m == nil {
-		log.Printf("Warning: Cannot set load balancer - workspace manager is nil")
+		log.Printf("Warning: SetLoadBalancer called on nil manager")
 		return
 	}
-	
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	
@@ -414,156 +315,161 @@ func (m *Manager) SetLoadBalancer(lb LoadBalancer) {
 	}
 }
 
-// GetLoadBalancer returns the current load balancer (if any)
+// GetLoadBalancer returns the current load balancer
 func (m *Manager) GetLoadBalancer() LoadBalancer {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	
 	return m.loadBalancer
 }
 
-// HasLoadBalancer returns true if a load balancer is configured
+// HasLoadBalancer checks if a load balancer is configured
 func (m *Manager) HasLoadBalancer() bool {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	
 	return m.loadBalancer != nil
 }
 
-// GetWorkspaceForSenderWithContext determines which workspace should handle a message with context
+// GetWorkspaceForSenderWithContext is like GetWorkspaceForSender but accepts a context
 func (m *Manager) GetWorkspaceForSenderWithContext(ctx context.Context, senderEmail string) (*config.WorkspaceConfig, error) {
+	// Defensive programming: validate manager and input
+	if m == nil {
+		return nil, fmt.Errorf("workspace manager is nil")
+	}
 	if senderEmail == "" {
 		return nil, fmt.Errorf("sender email cannot be empty")
 	}
-	
+
 	// Extract domain from sender email
-	atIndex := len(senderEmail) - 1
-	for i := len(senderEmail) - 1; i >= 0; i-- {
-		if senderEmail[i] == '@' {
-			atIndex = i
-			break
-		}
-	}
-	
-	if atIndex == len(senderEmail) - 1 || atIndex == 0 {
+	atIndex := strings.LastIndex(senderEmail, "@")
+	if atIndex < 0 {
 		return nil, fmt.Errorf("invalid sender email format: %s", senderEmail)
 	}
-	
 	domain := senderEmail[atIndex+1:]
-	
-	// Try load balancer first if available
+
+	// First, try direct domain matching
+	workspace, err := m.GetWorkspaceByDomain(domain)
+	if err == nil && workspace != nil {
+		return workspace, nil
+	}
+
+	// If we have a load balancer, use it for advanced routing
 	if m.loadBalancer != nil {
 		workspace, err := m.loadBalancer.SelectWorkspace(ctx, senderEmail)
+		// Defensive: check both error and workspace to prevent nil pointer dereference
 		if err == nil && workspace != nil {
-			log.Printf("Load balancer selected workspace %s for sender %s", workspace.ID, senderEmail)
 			return workspace, nil
 		}
-		log.Printf("Load balancer selection failed for %s, falling back to direct mapping: %v", senderEmail, err)
+		if err != nil {
+			log.Printf("Load balancer selection failed for %s: %v", senderEmail, err)
+		} else {
+			log.Printf("Load balancer returned nil workspace for %s", senderEmail)
+		}
 	}
-	
-	// Fall back to direct domain mapping
-	return m.GetWorkspaceByDomain(domain)
+
+	return nil, fmt.Errorf("no workspace found for sender: %s", senderEmail)
 }
 
-// ValidateConfiguration checks if all workspaces are properly configured
+// ValidateConfiguration validates all workspace configurations
 func (m *Manager) ValidateConfiguration() error {
+	// Defensive programming: validate manager
+	if m == nil {
+		return fmt.Errorf("workspace manager is nil")
+	}
+
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	
+
 	if len(m.workspaces) == 0 {
 		return fmt.Errorf("no workspaces configured")
 	}
-	
+
+	// Check for duplicate domains
+	domainCount := make(map[string][]string)
+	for domain, workspaceID := range m.domainToWorkspace {
+		domainCount[domain] = append(domainCount[domain], workspaceID)
+	}
+
+	for domain, workspaceIDs := range domainCount {
+		if len(workspaceIDs) > 1 {
+			return fmt.Errorf("domain %s is configured in multiple workspaces: %v", domain, workspaceIDs)
+		}
+	}
+
+	// Validate each workspace
 	for id, workspace := range m.workspaces {
-		// Check Gmail configuration
+		// Defensive: check for nil workspace
+		if workspace == nil {
+			return fmt.Errorf("workspace %s is nil", id)
+		}
+
+		if len(workspace.Domains) == 0 {
+			return fmt.Errorf("workspace %s has no domains configured", id)
+		}
+
+		// Check if at least one provider is enabled
+		hasEnabledProvider := false
 		if workspace.Gmail != nil && workspace.Gmail.Enabled {
-			// Check file-based config
-			if workspace.Gmail.ServiceAccountFile != "" {
-				if _, err := os.Stat(workspace.Gmail.ServiceAccountFile); os.IsNotExist(err) {
-					return fmt.Errorf("workspace %s Gmail service account file does not exist: %s", 
-						id, workspace.Gmail.ServiceAccountFile)
-				}
-			}
-			// Check env-based config
-			if workspace.Gmail.ServiceAccountEnv != "" {
-				if os.Getenv(workspace.Gmail.ServiceAccountEnv) == "" {
-					return fmt.Errorf("workspace %s Gmail service account env var %s is not set", 
-						id, workspace.Gmail.ServiceAccountEnv)
-				}
-			}
-			// Ensure at least one method is configured (skip if using database credentials)
-			// Database-based credentials are validated at provider initialization time
-			if workspace.Gmail.ServiceAccountFile == "" && workspace.Gmail.ServiceAccountEnv == "" {
-				// This is OK if credentials are stored in the database
-				log.Printf("Workspace %s Gmail provider will use database-stored credentials", id)
-			}
+			hasEnabledProvider = true
 		}
-		
-		// Check Mailgun configuration
 		if workspace.Mailgun != nil && workspace.Mailgun.Enabled {
-			if workspace.Mailgun.APIKey == "" {
-				return fmt.Errorf("workspace %s Mailgun API key is empty", id)
-			}
+			hasEnabledProvider = true
 		}
-		
-		// Check Mandrill configuration
 		if workspace.Mandrill != nil && workspace.Mandrill.Enabled {
-			if workspace.Mandrill.APIKey == "" {
-				return fmt.Errorf("workspace %s Mandrill API key is empty", id)
-			}
+			hasEnabledProvider = true
 		}
-		
-		// Ensure at least one provider is enabled
-		hasEnabledProvider := (workspace.Gmail != nil && workspace.Gmail.Enabled) ||
-							 (workspace.Mailgun != nil && workspace.Mailgun.Enabled) ||
-							 (workspace.Mandrill != nil && workspace.Mandrill.Enabled)
+
 		if !hasEnabledProvider {
 			return fmt.Errorf("workspace %s has no enabled providers", id)
 		}
 	}
-	
+
 	return nil
 }
 
-// GetStats returns statistics about the workspace configuration
+// GetStats returns statistics about the workspace manager
 func (m *Manager) GetStats() map[string]interface{} {
+	// Defensive programming: handle nil manager
+	if m == nil {
+		log.Printf("Warning: GetStats called on nil manager")
+		return map[string]interface{}{
+			"error": "manager is nil",
+		}
+	}
+
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	
-	gmailWorkspaces := 0
-	mailgunWorkspaces := 0
-	mandrillWorkspaces := 0
-	multiProviderWorkspaces := 0
-	
+
+	stats := map[string]interface{}{
+		"total_workspaces": len(m.workspaces),
+		"total_domains":    len(m.domainToWorkspace),
+		"has_load_balancer": m.loadBalancer != nil,
+	}
+
+	// Count provider types
+	gmailCount := 0
+	mailgunCount := 0
+	mandrillCount := 0
+
 	for _, workspace := range m.workspaces {
-		hasGmail := workspace.Gmail != nil && workspace.Gmail.Enabled
-		hasMailgun := workspace.Mailgun != nil && workspace.Mailgun.Enabled
-		hasMandrill := workspace.Mandrill != nil && workspace.Mandrill.Enabled
-		
-		providerCount := 0
-		if hasGmail {
-			gmailWorkspaces++
-			providerCount++
+		// Defensive: skip nil workspaces
+		if workspace == nil {
+			continue
 		}
-		if hasMailgun {
-			mailgunWorkspaces++
-			providerCount++
+
+		if workspace.Gmail != nil && workspace.Gmail.Enabled {
+			gmailCount++
 		}
-		if hasMandrill {
-			mandrillWorkspaces++
-			providerCount++
+		if workspace.Mailgun != nil && workspace.Mailgun.Enabled {
+			mailgunCount++
 		}
-		if providerCount > 1 {
-			multiProviderWorkspaces++
+		if workspace.Mandrill != nil && workspace.Mandrill.Enabled {
+			mandrillCount++
 		}
 	}
-	
-	return map[string]interface{}{
-		"total_workspaces":    len(m.workspaces),
-		"gmail_workspaces":    gmailWorkspaces,
-		"mailgun_workspaces":  mailgunWorkspaces,
-		"mandrill_workspaces": mandrillWorkspaces,
-		"multi_provider_workspaces": multiProviderWorkspaces,
-		"total_domains":       len(m.domainToWorkspace),
-	}
+
+	stats["gmail_providers"] = gmailCount
+	stats["mailgun_providers"] = mailgunCount
+	stats["mandrill_providers"] = mandrillCount
+
+	return stats
 }

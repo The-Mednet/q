@@ -165,3 +165,120 @@ export interface HeaderRewriteConfig {
     new_value?: string;
   }>;
 }
+
+// New Provider Management API Types
+
+export interface WorkspaceProvider {
+  id: number;
+  workspace_id: string;
+  type: 'gmail' | 'mailgun' | 'mandrill';
+  name: string;
+  enabled: boolean;
+  priority: number;
+  created_at: string;
+  updated_at: string;
+  config?: GmailProviderConfig | MailgunProviderConfig | MandrillProviderConfig;
+}
+
+export interface GmailProviderConfig {
+  id: number;
+  provider_id: number;
+  service_account_file: string;
+  default_sender: string;
+  delegated_user?: string;
+  scopes: string[];
+  created_at: string;
+  updated_at: string;
+}
+
+export interface MailgunProviderConfig {
+  id: number;
+  provider_id: number;
+  api_key: string;
+  domain: string;
+  base_url: string;
+  track_opens: boolean;
+  track_clicks: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface MandrillProviderConfig {
+  id: number;
+  provider_id: number;
+  api_key: string;
+  base_url: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface WorkspaceRateLimitConfig {
+  workspace_id: string;
+  daily: number;
+  hourly: number;
+  per_user_daily: number;
+  per_user_hourly: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface WorkspaceUserRateLimit {
+  id: number;
+  workspace_id: string;
+  user_email: string;
+  daily: number;
+  hourly: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ProviderHeaderRewriteRule {
+  id: number;
+  provider_id: number;
+  header_name: string;
+  action: 'add' | 'replace' | 'remove';
+  value?: string;
+  condition?: string;
+  enabled: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CreateProviderRequest {
+  workspace_id: string;
+  type: 'gmail' | 'mailgun' | 'mandrill';
+  name: string;
+  enabled: boolean;
+  priority: number;
+  config: object;
+}
+
+export interface UpdateProviderRequest {
+  name: string;
+  enabled: boolean;
+  priority: number;
+  config?: object;
+}
+
+export interface UpdateRateLimitsRequest {
+  daily: number;
+  hourly: number;
+  per_user_daily: number;
+  per_user_hourly: number;
+}
+
+export interface CreateUserRateLimitRequest {
+  workspace_id: string;
+  user_email: string;
+  daily: number;
+  hourly: number;
+}
+
+export interface CreateHeaderRuleRequest {
+  provider_id: number;
+  header_name: string;
+  action: 'add' | 'replace' | 'remove';
+  value?: string;
+  condition?: string;
+  enabled: boolean;
+}

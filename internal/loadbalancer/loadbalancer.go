@@ -349,6 +349,84 @@ func (lb *LoadBalancerImpl) RefreshPools(ctx context.Context) error {
 	return nil
 }
 
+// SelectFromDefaultPool selects a workspace from the default pool
+func (lb *LoadBalancerImpl) SelectFromDefaultPool(ctx context.Context) (*config.WorkspaceConfig, error) {
+	// Defensive programming: validate load balancer
+	if lb == nil {
+		return nil, fmt.Errorf("load balancer is nil")
+	}
+	
+	// Get the default pool ID from configuration
+	defaultPoolID := lb.getDefaultPoolID()
+	if defaultPoolID == "" {
+		return nil, fmt.Errorf("no default pool configured")
+	}
+	
+	// Get the default pool
+	pool, err := lb.poolManager.GetPool(defaultPoolID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get default pool %s: %w", defaultPoolID, err)
+	}
+	
+	if pool == nil {
+		return nil, fmt.Errorf("default pool %s not found", defaultPoolID)
+	}
+	
+	if !pool.Enabled {
+		return nil, fmt.Errorf("default pool %s is disabled", defaultPoolID)
+	}
+	
+	// Build candidates from the default pool (use a dummy email since we're selecting from default pool)
+	candidates, err := lb.buildCandidates(ctx, pool, "default@example.com")
+	if err != nil {
+		return nil, fmt.Errorf("failed to build candidates from default pool: %w", err)
+	}
+	
+	if len(candidates) == 0 {
+		return nil, fmt.Errorf("no available workspaces in default pool %s", defaultPoolID)
+	}
+	
+	// Select workspace using the pool's strategy
+	selected, err := lb.selector.Select(ctx, candidates, string(pool.Strategy))
+	if err != nil {
+		return nil, fmt.Errorf("failed to select from default pool: %w", err)
+	}
+	
+	if selected == nil {
+		return nil, fmt.Errorf("no workspace selected from default pool")
+	}
+	
+	// Get the actual workspace configuration
+	workspace, err := lb.workspaceProvider.GetWorkspaceByID(selected.Workspace.WorkspaceID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get workspace %s: %w", selected.Workspace.WorkspaceID, err)
+	}
+	
+	log.Printf("Selected workspace %s from default pool %s", selected.Workspace.WorkspaceID, defaultPoolID)
+	return workspace, nil
+}
+
+// GetPoolManager returns the pool manager instance
+func (lb *LoadBalancerImpl) GetPoolManager() *PoolManager {
+	return lb.poolManager
+}
+
+// getDefaultPoolID retrieves the default pool ID from the database
+func (lb *LoadBalancerImpl) getDefaultPoolID() string {
+	// Query the database for the default pool
+	var defaultPoolID string
+	query := `SELECT id FROM load_balancing_pools WHERE is_default = TRUE AND enabled = TRUE LIMIT 1`
+	
+	err := lb.db.Get(&defaultPoolID, query)
+	if err != nil {
+		log.Printf("Failed to get default pool from database: %v", err)
+		// Fallback to general-pool if database query fails
+		return "general-pool"
+	}
+	
+	return defaultPoolID
+}
+
 // extractDomainFromEmail extracts domain from an email address
 func (lb *LoadBalancerImpl) extractDomainFromEmail(email string) (string, error) {
 	atIndex := strings.LastIndex(email, "@")
@@ -366,18 +444,35 @@ func (lb *LoadBalancerImpl) extractDomainFromEmail(email string) (string, error)
 
 // startBackgroundRefresh starts a goroutine to periodically refresh pools
 func (lb *LoadBalancerImpl) startBackgroundRefresh() {
+	// Defensive programming: validate state before starting background goroutine
+	if lb.config == nil || lb.config.HealthCheckInterval <= 0 {
+		log.Printf("Warning: Invalid health check interval, skipping background refresh")
+		return
+	}
+	
 	lb.refreshTicker = time.NewTicker(lb.config.HealthCheckInterval)
 	
 	go func() {
+		defer func() {
+			// Defensive programming: ensure ticker is stopped on goroutine exit
+			if lb.refreshTicker != nil {
+				lb.refreshTicker.Stop()
+			}
+			log.Printf("Background pool refresh goroutine exited")
+		}()
+		
 		for {
 			select {
 			case <-lb.refreshTicker.C:
+				// Create timeout context for each refresh operation
 				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 				if err := lb.RefreshPools(ctx); err != nil {
 					log.Printf("Background pool refresh failed: %v", err)
 				}
 				cancel()
+				
 			case <-lb.shutdownChan:
+				log.Printf("Background pool refresh received shutdown signal")
 				return
 			}
 		}
@@ -388,15 +483,34 @@ func (lb *LoadBalancerImpl) startBackgroundRefresh() {
 
 // Shutdown gracefully shuts down the load balancer
 func (lb *LoadBalancerImpl) Shutdown(ctx context.Context) error {
-	close(lb.shutdownChan)
-
-	if lb.refreshTicker != nil {
-		lb.refreshTicker.Stop()
+	// Defensive programming: validate load balancer state
+	if lb == nil {
+		return fmt.Errorf("load balancer is nil")
+	}
+	
+	log.Printf("Starting load balancer shutdown...")
+	
+	// Signal shutdown to background goroutines
+	select {
+	case <-lb.shutdownChan:
+		// Channel already closed
+		log.Printf("Load balancer already shutting down")
+	default:
+		close(lb.shutdownChan)
 	}
 
-	// Shutdown pool manager
-	if err := lb.poolManager.Shutdown(ctx); err != nil {
-		return fmt.Errorf("failed to shutdown pool manager: %w", err)
+	// Stop the ticker with proper synchronization
+	if lb.refreshTicker != nil {
+		lb.refreshTicker.Stop()
+		lb.refreshTicker = nil
+	}
+
+	// Shutdown pool manager with timeout
+	if lb.poolManager != nil {
+		if err := lb.poolManager.Shutdown(ctx); err != nil {
+			log.Printf("Warning: Pool manager shutdown failed: %v", err)
+			return fmt.Errorf("failed to shutdown pool manager: %w", err)
+		}
 	}
 
 	log.Println("Load balancer shutdown complete")
@@ -405,7 +519,12 @@ func (lb *LoadBalancerImpl) Shutdown(ctx context.Context) error {
 
 // GetAllPools returns all configured pools
 func (lb *LoadBalancerImpl) GetAllPools() []*LoadBalancingPool {
-	return lb.poolManager.GetAllPools()
+	poolsMap := lb.poolManager.GetAllPools()
+	pools := make([]*LoadBalancingPool, 0, len(poolsMap))
+	for _, pool := range poolsMap {
+		pools = append(pools, pool)
+	}
+	return pools
 }
 
 // GetPoolsForDomain returns pools that can handle the specified domain

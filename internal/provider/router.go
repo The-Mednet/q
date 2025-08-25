@@ -203,8 +203,8 @@ func (r *Router) RouteMessage(ctx context.Context, msg *models.Message) (Provide
 		return nil, fmt.Errorf("workspace configuration is nil for domain %s", domain)
 	}
 	
-	// Set workspace ID on message
-	msg.WorkspaceID = workspace.ID
+	// Set provider ID on message
+	msg.ProviderID = workspace.ID
 	
 	// Route based on provider preference and availability
 	provider, err := r.selectProvider(providers, workspace)
@@ -460,17 +460,44 @@ func (r *Router) GetStats() map[string]interface{} {
 
 // Shutdown gracefully shuts down all providers
 func (r *Router) Shutdown(ctx context.Context) {
+	// Defensive programming: validate router state
+	if r == nil {
+		log.Printf("Warning: Router is nil during shutdown")
+		return
+	}
+	
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	
 	log.Printf("Shutting down %d providers", len(r.providers))
 	
-	// For now, we don't have specific shutdown logic for providers
-	// In the future, we might add cleanup logic for cached connections, etc.
+	// Shutdown individual providers with proper error handling
+	var shutdownErrors []error
+	for providerID, provider := range r.providers {
+		if provider == nil {
+			log.Printf("Warning: Provider %s is nil during shutdown", providerID)
+			continue
+		}
+		
+		// If provider has a shutdown method, call it
+		if shutdownProvider, ok := provider.(interface{ Shutdown(context.Context) error }); ok {
+			if err := shutdownProvider.Shutdown(ctx); err != nil {
+				log.Printf("Warning: Failed to shutdown provider %s: %v", providerID, err)
+				shutdownErrors = append(shutdownErrors, fmt.Errorf("provider %s shutdown failed: %w", providerID, err))
+			}
+		}
+	}
 	
-	// Clear provider maps
+	// Clear provider maps after attempting proper shutdown
 	r.providers = make(map[string]Provider)
 	r.providersByDomain = make(map[string][]Provider)
 	
-	log.Println("Provider router shutdown complete")
+	if len(shutdownErrors) > 0 {
+		log.Printf("Provider router shutdown completed with %d errors", len(shutdownErrors))
+		for _, err := range shutdownErrors {
+			log.Printf("Shutdown error: %v", err)
+		}
+	} else {
+		log.Println("Provider router shutdown complete")
+	}
 }

@@ -76,6 +76,27 @@ func (q *MemoryQueue) UpdateStatus(id string, status models.MessageStatus, err e
 	return nil
 }
 
+func (q *MemoryQueue) UpdateStatusWithProvider(id string, status models.MessageStatus, providerID string, err error) error {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+
+	msg, exists := q.messages[id]
+	if !exists {
+		return fmt.Errorf("message %s not found", id)
+	}
+
+	msg.Status = status
+	// Provider ID is only stored in the database, not in memory
+	now := time.Now()
+	msg.ProcessedAt = &now
+
+	if err != nil {
+		msg.Error = err.Error()
+	}
+
+	return nil
+}
+
 func (q *MemoryQueue) Get(id string) (*models.Message, error) {
 	q.mu.RLock()
 	defer q.mu.RUnlock()
@@ -170,10 +191,10 @@ func (q *MemoryQueue) GetSentCountsByWorkspaceAndSender() (map[string]map[string
 
 	for _, msg := range q.messages {
 		if msg.Status == models.StatusSent && msg.ProcessedAt != nil && msg.ProcessedAt.After(cutoff) {
-			if counts[msg.WorkspaceID] == nil {
-				counts[msg.WorkspaceID] = make(map[string]int)
+			if counts[msg.ProviderID] == nil {
+				counts[msg.ProviderID] = make(map[string]int)
 			}
-			counts[msg.WorkspaceID][msg.From]++
+			counts[msg.ProviderID][msg.From]++
 		}
 	}
 

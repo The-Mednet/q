@@ -176,8 +176,8 @@ func (m *MailgunProvider) SendMessage(ctx context.Context, msg *models.Message) 
 	if msg.ID != "" {
 		form.Set("v:message_id", msg.ID)
 	}
-	if msg.WorkspaceID != "" {
-		form.Set("v:workspace_id", msg.WorkspaceID)
+	if msg.ProviderID != "" {
+		form.Set("v:provider_id", msg.ProviderID)
 	}
 	
 	// Add metadata as custom variables

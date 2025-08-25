@@ -195,6 +195,19 @@ func (pm *PoolManager) GetPoolsForDomain(domain string) ([]*LoadBalancingPool, e
 	return pools, nil
 }
 
+// GetAllPools returns all pools
+func (pm *PoolManager) GetAllPools() map[string]*LoadBalancingPool {
+	pm.mu.RLock()
+	defer pm.mu.RUnlock()
+	
+	// Return a copy to prevent external modification
+	result := make(map[string]*LoadBalancingPool)
+	for k, v := range pm.pools {
+		result[k] = v
+	}
+	return result
+}
+
 // GetPool returns a specific pool by ID
 func (pm *PoolManager) GetPool(poolID string) (*LoadBalancingPool, error) {
 	pm.mu.RLock()
@@ -213,24 +226,6 @@ func (pm *PoolManager) GetPool(poolID string) (*LoadBalancingPool, error) {
 	return &poolCopy, nil
 }
 
-// GetAllPools returns all loaded pools
-func (pm *PoolManager) GetAllPools() []*LoadBalancingPool {
-	pm.mu.RLock()
-	defer pm.mu.RUnlock()
-
-	var pools []*LoadBalancingPool
-	for _, pool := range pm.pools {
-		if pool.Enabled {
-			// Return a copy to prevent external modification
-			poolCopy := *pool
-			poolCopy.Workspaces = make([]PoolWorkspace, len(pool.Workspaces))
-			copy(poolCopy.Workspaces, pool.Workspaces)
-			pools = append(pools, &poolCopy)
-		}
-	}
-
-	return pools
-}
 
 // CreatePool creates a new load balancing pool in the database
 func (pm *PoolManager) CreatePool(ctx context.Context, pool *LoadBalancingPool) error {

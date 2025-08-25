@@ -39,19 +39,72 @@ function MetricsPage() {
   const { data: rateLimits, isLoading: rateLimitsLoading } = useRateLimits();
   const { data: health, isLoading: healthLoading } = useHealth();
 
+  // Ensure data is properly initialized and safe for Recharts
+  const hourlyData = React.useMemo(() => {
+    if (!stats?.hourly_stats || stats.hourly_stats.length === 0) {
+      // Return empty dataset that won't crash Recharts
+      return [{ hour: '00:00', sent: 0, failed: 0, queued: 0, avg_processing_time: 0 }];
+    }
+    
+    // Aggregate duplicate hours and ensure all fields are numbers
+    const hourMap = new Map();
+    stats.hourly_stats.forEach(stat => {
+      const hour = stat.hour || '00:00';
+      if (hourMap.has(hour)) {
+        const existing = hourMap.get(hour);
+        hourMap.set(hour, {
+          hour,
+          sent: (existing.sent || 0) + (stat.sent || 0),
+          failed: (existing.failed || 0) + (stat.failed || 0),
+          queued: (existing.queued || 0) + (stat.queued || 0),
+          avg_processing_time: Math.max(existing.avg_processing_time || 0, stat.avg_processing_time || 0),
+        });
+      } else {
+        hourMap.set(hour, {
+          hour,
+          sent: stat.sent || 0,
+          failed: stat.failed || 0,
+          queued: stat.queued || 0,
+          avg_processing_time: stat.avg_processing_time || 0,
+        });
+      }
+    });
+    
+    // Convert to array and sort by hour
+    const result = Array.from(hourMap.values()).sort((a, b) => {
+      // Simple hour comparison (assumes HH:MM format)
+      return a.hour.localeCompare(b.hour);
+    });
+    
+    return result.length > 0 ? result : [{ hour: '00:00', sent: 0, failed: 0, queued: 0, avg_processing_time: 0 }];
+  }, [stats?.hourly_stats]);
+
+  const statusData = React.useMemo(() => {
+    if (!stats) return [];
+    const data = [
+      { name: 'Queued', value: stats.messages_queued || 0, color: statusColors.queued },
+      { name: 'Processing', value: stats.messages_processing || 0, color: statusColors.processing },
+      { name: 'Sent', value: stats.messages_sent || 0, color: statusColors.sent },
+      { name: 'Failed', value: stats.messages_failed || 0, color: statusColors.failed },
+    ];
+    // Filter out zero values for cleaner pie chart
+    return data.filter(d => d.value > 0);
+  }, [stats]);
+
+  const providerData = React.useMemo(() => {
+    if (!stats?.provider_stats || stats.provider_stats.length === 0) {
+      return [];
+    }
+    return stats.provider_stats.map(stat => ({
+      provider: stat.provider || 'Unknown',
+      sent: stat.sent || 0,
+      failed: stat.failed || 0,
+    }));
+  }, [stats?.provider_stats]);
+
   if (statsLoading || rateLimitsLoading || healthLoading) {
     return <LinearProgress />;
   }
-
-  const hourlyData = stats?.hourly_stats || [];
-  const statusData = stats ? [
-    { name: 'Queued', value: stats.messages_queued, color: statusColors.queued },
-    { name: 'Processing', value: stats.messages_processing, color: statusColors.processing },
-    { name: 'Sent', value: stats.messages_sent, color: statusColors.sent },
-    { name: 'Failed', value: stats.messages_failed, color: statusColors.failed },
-  ] : [];
-
-  const providerData = stats?.provider_stats || [];
 
   return (
     <GridLegacy container spacing={3}>
@@ -70,11 +123,7 @@ function MetricsPage() {
           background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
           color: 'white',
           position: 'relative',
-          overflow: 'visible',
-          '&:hover': {
-            transform: 'translateY(-8px)',
-            boxShadow: '0px 16px 48px rgba(102, 126, 234, 0.3)',
-          }
+          overflow: 'visible'
         }}>
           <CardContent>
             <Typography sx={{ fontSize: '0.875rem', opacity: 0.9, fontWeight: 600 }} gutterBottom>
@@ -103,11 +152,7 @@ function MetricsPage() {
           background: 'linear-gradient(135deg, #10B981 0%, #059669 100%)',
           color: 'white',
           position: 'relative',
-          overflow: 'visible',
-          '&:hover': {
-            transform: 'translateY(-8px)',
-            boxShadow: '0px 16px 48px rgba(16, 185, 129, 0.3)',
-          }
+          overflow: 'visible'
         }}>
           <CardContent>
             <Typography sx={{ fontSize: '0.875rem', opacity: 0.9, fontWeight: 600 }} gutterBottom>
@@ -139,11 +184,7 @@ function MetricsPage() {
           background: 'linear-gradient(135deg, #F59E0B 0%, #D97706 100%)',
           color: 'white',
           position: 'relative',
-          overflow: 'visible',
-          '&:hover': {
-            transform: 'translateY(-8px)',
-            boxShadow: '0px 16px 48px rgba(245, 158, 11, 0.3)',
-          }
+          overflow: 'visible'
         }}>
           <CardContent>
             <Typography sx={{ fontSize: '0.875rem', opacity: 0.9, fontWeight: 600 }} gutterBottom>
@@ -172,11 +213,7 @@ function MetricsPage() {
           background: 'linear-gradient(135deg, #303B8B 0%, #5969C5 100%)',
           color: 'white',
           position: 'relative',
-          overflow: 'visible',
-          '&:hover': {
-            transform: 'translateY(-8px)',
-            boxShadow: '0px 16px 48px rgba(48, 59, 139, 0.3)',
-          }
+          overflow: 'visible'
         }}>
           <CardContent>
             <Typography sx={{ fontSize: '0.875rem', opacity: 0.9, fontWeight: 600 }} gutterBottom>
@@ -210,39 +247,51 @@ function MetricsPage() {
           <Typography variant="h6" gutterBottom>
             Message Volume (24 Hours)
           </Typography>
-          <ResponsiveContainer width="100%" height={300}>
-            <AreaChart data={hourlyData}>
-              <CartesianGrid strokeDasharray="3 3" />
-              <XAxis dataKey="hour" />
-              <YAxis />
-              <Tooltip />
-              <Legend />
-              <Area
-                type="monotone"
-                dataKey="sent"
-                stackId="1"
-                stroke={statusColors.sent}
-                fill={statusColors.sent}
-                name="Sent"
-              />
-              <Area
-                type="monotone"
-                dataKey="failed"
-                stackId="1"
-                stroke={statusColors.failed}
-                fill={statusColors.failed}
-                name="Failed"
-              />
-              <Area
-                type="monotone"
-                dataKey="queued"
-                stackId="1"
-                stroke={statusColors.queued}
-                fill={statusColors.queued}
-                name="Queued"
-              />
-            </AreaChart>
-          </ResponsiveContainer>
+          {hourlyData && hourlyData.length > 0 ? (
+            <ResponsiveContainer width="100%" height={300}>
+              <AreaChart data={hourlyData} isAnimationActive={false}>
+                <CartesianGrid strokeDasharray="3 3" />
+                <XAxis dataKey="hour" />
+                <YAxis />
+                <Tooltip />
+                <Legend />
+                <Area
+                  type="monotone"
+                  dataKey="sent"
+                  stackId="1"
+                  stroke={statusColors.sent}
+                  fill={statusColors.sent}
+                  name="Sent"
+                  animationDuration={0}
+                  isAnimationActive={false}
+                />
+                <Area
+                  type="monotone"
+                  dataKey="failed"
+                  stackId="1"
+                  stroke={statusColors.failed}
+                  fill={statusColors.failed}
+                  name="Failed"
+                  animationDuration={0}
+                  isAnimationActive={false}
+                />
+                <Area
+                  type="monotone"
+                  dataKey="queued"
+                  stackId="1"
+                  stroke={statusColors.queued}
+                  fill={statusColors.queued}
+                  name="Queued"
+                  animationDuration={0}
+                  isAnimationActive={false}
+                />
+              </AreaChart>
+            </ResponsiveContainer>
+          ) : (
+            <Box sx={{ height: 300, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+              <Typography color="text.secondary">No data available</Typography>
+            </Box>
+          )}
         </Paper>
       </GridLegacy>
 
@@ -252,25 +301,32 @@ function MetricsPage() {
           <Typography variant="h6" gutterBottom>
             Status Distribution
           </Typography>
-          <ResponsiveContainer width="100%" height={300}>
-            <PieChart>
-              <Pie
-                data={statusData}
-                cx="50%"
-                cy="50%"
-                labelLine={false}
-                label={({ name, percent }) => `${name} ${((percent ?? 0) * 100).toFixed(0)}%`}
-                outerRadius={80}
-                fill="#8884d8"
-                dataKey="value"
-              >
-                {statusData.map((entry, index) => (
-                  <Cell key={`cell-${index}`} fill={entry.color} />
-                ))}
-              </Pie>
-              <Tooltip />
-            </PieChart>
-          </ResponsiveContainer>
+          {statusData && statusData.length > 0 ? (
+            <ResponsiveContainer width="100%" height={300}>
+              <PieChart isAnimationActive={false}>
+                <Pie
+                  data={statusData}
+                  cx="50%"
+                  cy="50%"
+                  labelLine={false}
+                  label={({ name, percent }) => `${name} ${((percent ?? 0) * 100).toFixed(0)}%`}
+                  outerRadius={80}
+                  fill="#8884d8"
+                  dataKey="value"
+                  isAnimationActive={false}
+                >
+                  {statusData.map((entry, index) => (
+                    <Cell key={`cell-${index}`} fill={entry.color} />
+                  ))}
+                </Pie>
+                <Tooltip />
+              </PieChart>
+            </ResponsiveContainer>
+          ) : (
+            <Box sx={{ height: 300, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+              <Typography color="text.secondary">No messages yet</Typography>
+            </Box>
+          )}
         </Paper>
       </GridLegacy>
 
@@ -280,17 +336,23 @@ function MetricsPage() {
           <Typography variant="h6" gutterBottom>
             Provider Performance
           </Typography>
-          <ResponsiveContainer width="100%" height={300}>
-            <BarChart data={providerData}>
-              <CartesianGrid strokeDasharray="3 3" />
-              <XAxis dataKey="provider" />
-              <YAxis />
-              <Tooltip />
-              <Legend />
-              <Bar dataKey="sent" fill={statusColors.sent} name="Sent" />
-              <Bar dataKey="failed" fill={statusColors.failed} name="Failed" />
-            </BarChart>
-          </ResponsiveContainer>
+          {providerData && providerData.length > 0 ? (
+            <ResponsiveContainer width="100%" height={300}>
+              <BarChart data={providerData} isAnimationActive={false}>
+                <CartesianGrid strokeDasharray="3 3" />
+                <XAxis dataKey="provider" />
+                <YAxis />
+                <Tooltip />
+                <Legend />
+                <Bar dataKey="sent" fill={statusColors.sent} name="Sent" isAnimationActive={false} />
+                <Bar dataKey="failed" fill={statusColors.failed} name="Failed" isAnimationActive={false} />
+              </BarChart>
+            </ResponsiveContainer>
+          ) : (
+            <Box sx={{ height: 300, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+              <Typography color="text.secondary">No provider data available</Typography>
+            </Box>
+          )}
         </Paper>
       </GridLegacy>
 
@@ -329,21 +391,28 @@ function MetricsPage() {
           <Typography variant="h6" gutterBottom>
             Processing Time Trends
           </Typography>
-          <ResponsiveContainer width="100%" height={250}>
-            <LineChart data={hourlyData}>
-              <CartesianGrid strokeDasharray="3 3" />
-              <XAxis dataKey="hour" />
-              <YAxis />
-              <Tooltip />
-              <Legend />
-              <Line
-                type="monotone"
-                dataKey="avg_processing_time"
-                stroke="#8884d8"
-                name="Avg Processing Time (ms)"
-              />
-            </LineChart>
-          </ResponsiveContainer>
+          {hourlyData && hourlyData.length > 0 ? (
+            <ResponsiveContainer width="100%" height={250}>
+              <LineChart data={hourlyData} isAnimationActive={false}>
+                <CartesianGrid strokeDasharray="3 3" />
+                <XAxis dataKey="hour" />
+                <YAxis />
+                <Tooltip />
+                <Legend />
+                <Line
+                  type="monotone"
+                  dataKey="avg_processing_time"
+                  stroke="#8884d8"
+                  name="Avg Processing Time (ms)"
+                  isAnimationActive={false}
+                />
+              </LineChart>
+            </ResponsiveContainer>
+          ) : (
+            <Box sx={{ height: 250, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+              <Typography color="text.secondary">No timing data available</Typography>
+            </Box>
+          )}
         </Paper>
       </GridLegacy>
     </GridLegacy>

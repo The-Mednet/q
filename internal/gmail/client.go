@@ -49,8 +49,8 @@ func (c *Client) SendMessage(ctx context.Context, msg *models.Message) error {
 		return fmt.Errorf("failed to route message: %v", err)
 	}
 
-	// Set workspace ID on message for tracking
-	msg.WorkspaceID = workspace.ID
+	// Set provider ID on message for tracking
+	msg.ProviderID = workspace.ID
 
 	// Extract campaign and user IDs from headers
 	if msg.Headers != nil {

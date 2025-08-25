@@ -164,22 +164,22 @@ func (p *QueueProcessor) Process() error {
 			}
 		}
 
-		// Check rate limit for this sender (workspace-aware)
-		if !p.rateLimiter.Allow(msg.WorkspaceID, msg.From) {
-			log.Printf("Rate limit exceeded for sender %s in workspace %s (message %s)", msg.From, msg.WorkspaceID, msg.ID)
+		// Check rate limit for this sender (provider-aware)
+		if !p.rateLimiter.Allow(msg.ProviderID, msg.From) {
+			log.Printf("Rate limit exceeded for sender %s in provider %s (message %s)", msg.From, msg.ProviderID, msg.ID)
 			stats.RateLimited++
 
 			// Put back in queue as deferred
-			p.queue.UpdateStatus(msg.ID, models.StatusQueued, fmt.Errorf("rate limit exceeded for sender %s in workspace %s", msg.From, msg.WorkspaceID))
+			p.queue.UpdateStatus(msg.ID, models.StatusQueued, fmt.Errorf("rate limit exceeded for sender %s in provider %s", msg.From, msg.ProviderID))
 
 			if p.webhookClient != nil {
-				p.webhookClient.SendDeferredEvent(context.Background(), msg, fmt.Sprintf("Rate limit exceeded for %s in workspace %s", msg.From, msg.WorkspaceID))
+				p.webhookClient.SendDeferredEvent(context.Background(), msg, fmt.Sprintf("Rate limit exceeded for %s in provider %s", msg.From, msg.ProviderID))
 			}
 
 			// Log rate limit status for this sender
-			sent, remaining, resetTime := p.rateLimiter.GetStatus(msg.WorkspaceID, msg.From)
-			log.Printf("Rate limit status for %s in workspace %s: %d sent, %d remaining, resets at %s",
-				msg.From, msg.WorkspaceID, sent, remaining, resetTime.Format(time.RFC3339))
+			sent, remaining, resetTime := p.rateLimiter.GetStatus(msg.ProviderID, msg.From)
+			log.Printf("Rate limit status for %s in provider %s: %d sent, %d remaining, resets at %s",
+				msg.From, msg.ProviderID, sent, remaining, resetTime.Format(time.RFC3339))
 
 			continue
 		}
@@ -289,7 +289,7 @@ func (p *QueueProcessor) processMessage(msg *models.Message) error {
 	p.updateRecipientDeliveryStatus(msg, models.DeliveryStatusSent, "")
 
 	// Record successful send for rate limiting
-	p.rateLimiter.RecordSend(msg.WorkspaceID, msg.From)
+	p.rateLimiter.RecordSend(msg.ProviderID, msg.From)
 
 	// Send success webhook
 	if p.webhookClient != nil {

@@ -10,9 +10,10 @@ import (
 
 // LoadBalancingConfig represents the overall configuration for load balancing
 type LoadBalancingConfig struct {
-	Pools   []*LoadBalancingPool `json:"load_balancing_pools"`
-	Enabled bool                 `json:"enabled"`
-	Config  *LoadBalancerConfig  `json:"config,omitempty"`
+	Pools        []*LoadBalancingPool `json:"load_balancing_pools"`
+	Enabled      bool                 `json:"enabled"`
+	Config       *LoadBalancerConfig  `json:"config,omitempty"`
+	DefaultPoolID string              `json:"default_pool_id,omitempty"` // Pool to use when no domain match
 }
 
 // ConfigLoader handles loading and parsing load balancing configurations

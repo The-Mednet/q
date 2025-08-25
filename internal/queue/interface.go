@@ -8,6 +8,7 @@ type Queue interface {
 	Enqueue(message *models.Message) error
 	Dequeue(batchSize int) ([]*models.Message, error)
 	UpdateStatus(id string, status models.MessageStatus, err error) error
+	UpdateStatusWithProvider(id string, status models.MessageStatus, providerID string, err error) error
 	Get(id string) (*models.Message, error)
 	Remove(id string) error
 	Close() error

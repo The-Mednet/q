@@ -253,23 +253,23 @@ func (p *UnifiedProcessor) Process() error {
 			}
 		}
 		
-		// Check rate limit for this sender (workspace-aware)
-		if p.rateLimiter != nil && !p.rateLimiter.Allow(msg.WorkspaceID, msg.From) {
-			log.Printf("Rate limit exceeded for sender %s in workspace %s (message %s)", msg.From, msg.WorkspaceID, msg.ID)
+		// Check rate limit for this sender (provider-aware)
+		if p.rateLimiter != nil && !p.rateLimiter.Allow(msg.ProviderID, msg.From) {
+			log.Printf("Rate limit exceeded for sender %s in provider %s (message %s)", msg.From, msg.ProviderID, msg.ID)
 			stats.RateLimited++
 			
 			// Put back in queue as deferred
-			p.queue.UpdateStatus(msg.ID, models.StatusQueued, fmt.Errorf("rate limit exceeded for sender %s in workspace %s", msg.From, msg.WorkspaceID))
+			p.queue.UpdateStatusWithProvider(msg.ID, models.StatusQueued, "", fmt.Errorf("rate limit exceeded for sender %s in provider %s", msg.From, msg.ProviderID))
 			
 			if p.webhookClient != nil && p.shouldSendWebhook(msg) {
-				p.webhookClient.SendDeferredEvent(context.Background(), msg, fmt.Sprintf("Rate limit exceeded for %s in workspace %s", msg.From, msg.WorkspaceID))
+				p.webhookClient.SendDeferredEvent(context.Background(), msg, fmt.Sprintf("Rate limit exceeded for %s in provider %s", msg.From, msg.ProviderID))
 			}
 			
 			// Log rate limit status for this sender
 			if p.rateLimiter != nil {
-				sent, remaining, resetTime := p.rateLimiter.GetStatus(msg.WorkspaceID, msg.From)
-				log.Printf("Rate limit status for %s in workspace %s: %d sent, %d remaining, resets at %s",
-					msg.From, msg.WorkspaceID, sent, remaining, resetTime.Format(time.RFC3339))
+				sent, remaining, resetTime := p.rateLimiter.GetStatus(msg.ProviderID, msg.From)
+				log.Printf("Rate limit status for %s in provider %s: %d sent, %d remaining, resets at %s",
+					msg.From, msg.ProviderID, sent, remaining, resetTime.Format(time.RFC3339))
 			} else {
 				log.Printf("Rate limiter is nil, cannot get status for %s", msg.From)
 			}
@@ -328,7 +328,7 @@ func (p *UnifiedProcessor) processMessage(msg *models.Message) (string, error) {
 	// Validate that all variables have been resolved
 	if err := variables.ValidateNoUnresolvedVariables(msg); err != nil {
 		log.Printf("Error: Message %s contains unresolved variables: %v", msg.ID, err)
-		p.queue.UpdateStatus(msg.ID, models.StatusFailed, err)
+		p.queue.UpdateStatusWithProvider(msg.ID, models.StatusFailed, "", err)
 		
 		if p.webhookClient != nil && p.shouldSendWebhook(msg) {
 			p.webhookClient.SendRejectEvent(ctx, msg, fmt.Sprintf("Unresolved variables: %v", err))
@@ -349,7 +349,7 @@ func (p *UnifiedProcessor) processMessage(msg *models.Message) (string, error) {
 	selectedProvider, err := p.providerRouter.RouteMessage(ctx, msg)
 	if err != nil {
 		log.Printf("Error: Failed to route message %s: %v", msg.ID, err)
-		updateErr := p.queue.UpdateStatus(msg.ID, models.StatusFailed, err)
+		updateErr := p.queue.UpdateStatusWithProvider(msg.ID, models.StatusFailed, "", err)
 		if updateErr != nil {
 			log.Printf("ERROR: Failed to update status to failed for message %s: %v", msg.ID, updateErr)
 		} else {
@@ -372,7 +372,7 @@ func (p *UnifiedProcessor) processMessage(msg *models.Message) (string, error) {
 	if err != nil {
 		if strings.Contains(err.Error(), "authentication") || strings.Contains(err.Error(), "unauthorized") {
 			log.Printf("Authentication error for message %s via provider %s: %v", msg.ID, providerID, err)
-			p.queue.UpdateStatus(msg.ID, models.StatusAuthError, err)
+			p.queue.UpdateStatusWithProvider(msg.ID, models.StatusAuthError, providerID, err)
 			
 			// Update recipient delivery status
 			p.updateRecipientDeliveryStatus(msg, models.DeliveryStatusDeferred, err.Error())
@@ -382,7 +382,7 @@ func (p *UnifiedProcessor) processMessage(msg *models.Message) (string, error) {
 			}
 		} else {
 			log.Printf("Error sending message %s via provider %s: %v", msg.ID, providerID, err)
-			p.queue.UpdateStatus(msg.ID, models.StatusFailed, err)
+			p.queue.UpdateStatusWithProvider(msg.ID, models.StatusFailed, providerID, err)
 			
 			// Update recipient delivery status - determine if bounce or general failure
 			deliveryStatus := models.DeliveryStatusFailed
@@ -400,8 +400,8 @@ func (p *UnifiedProcessor) processMessage(msg *models.Message) (string, error) {
 		return providerID, err
 	}
 	
-	// Mark as sent
-	err = p.queue.UpdateStatus(msg.ID, models.StatusSent, nil)
+	// Mark as sent with provider ID
+	err = p.queue.UpdateStatusWithProvider(msg.ID, models.StatusSent, providerID, nil)
 	if err != nil {
 		log.Printf("Error updating message status: %v", err)
 	}
@@ -411,7 +411,7 @@ func (p *UnifiedProcessor) processMessage(msg *models.Message) (string, error) {
 	
 	// Record successful send for rate limiting
 	if p.rateLimiter != nil {
-		p.rateLimiter.RecordSend(msg.WorkspaceID, msg.From)
+		p.rateLimiter.RecordSend(msg.ProviderID, msg.From)
 	} else {
 		log.Printf("Warning: Rate limiter is nil, cannot record send for %s", msg.From)
 	}

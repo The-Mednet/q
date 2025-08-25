@@ -74,7 +74,18 @@ export async function fetcher<T>(
   // Handle empty responses
   const contentType = response.headers.get('content-type');
   if (!contentType || !contentType.includes('application/json')) {
-    return {} as T;
+    // Check if the response body is empty
+    const text = await response.text();
+    if (!text) {
+      // Return empty array for array types, empty object otherwise
+      return (Array.isArray({} as T) ? [] : {}) as T;
+    }
+    // Try to parse as JSON if there's content
+    try {
+      return JSON.parse(text) as T;
+    } catch {
+      return {} as T;
+    }
   }
 
   return response.json();
