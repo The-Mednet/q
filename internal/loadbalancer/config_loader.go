@@ -206,22 +206,22 @@ func (cl *ConfigLoader) validatePool(pool *LoadBalancingPool) error {
 	// Validate workspaces
 	workspaceIDs := make(map[string]bool)
 	for i, ws := range pool.Workspaces {
-		if ws.WorkspaceID == "" {
+		if ws.ProviderID == "" {
 			return fmt.Errorf("workspace %d: workspace ID is required", i)
 		}
 
 		// Check for duplicate workspace IDs within pool
-		if workspaceIDs[ws.WorkspaceID] {
-			return fmt.Errorf("duplicate workspace ID in pool: %s", ws.WorkspaceID)
+		if workspaceIDs[ws.ProviderID] {
+			return fmt.Errorf("duplicate workspace ID in pool: %s", ws.ProviderID)
 		}
-		workspaceIDs[ws.WorkspaceID] = true
+		workspaceIDs[ws.ProviderID] = true
 
 		if ws.Weight <= 0 {
-			return fmt.Errorf("workspace %d (%s): weight must be positive", i, ws.WorkspaceID)
+			return fmt.Errorf("workspace %d (%s): weight must be positive", i, ws.ProviderID)
 		}
 
 		if ws.MinCapacityThreshold < 0 || ws.MinCapacityThreshold > 1 {
-			return fmt.Errorf("workspace %d (%s): minimum capacity threshold must be between 0 and 1", i, ws.WorkspaceID)
+			return fmt.Errorf("workspace %d (%s): minimum capacity threshold must be between 0 and 1", i, ws.ProviderID)
 		}
 	}
 
@@ -281,19 +281,19 @@ func (cl *ConfigLoader) CreateSampleConfiguration() *LoadBalancingConfig {
 				Enabled:        true,
 				Workspaces: []PoolWorkspace{
 					{
-						WorkspaceID:          "gmail-workspace-1",
+						ProviderID:          "gmail-workspace-1",
 						Weight:               2.0,
 						Enabled:              true,
 						MinCapacityThreshold: 0.1, // 10% minimum capacity
 					},
 					{
-						WorkspaceID:          "mailgun-workspace-1",
+						ProviderID:          "mailgun-workspace-1",
 						Weight:               1.5,
 						Enabled:              true,
 						MinCapacityThreshold: 0.05, // 5% minimum capacity
 					},
 					{
-						WorkspaceID:          "mandrill-workspace-1",
+						ProviderID:          "mandrill-workspace-1",
 						Weight:               1.0,
 						Enabled:              true,
 						MinCapacityThreshold: 0.05, // 5% minimum capacity
@@ -308,13 +308,13 @@ func (cl *ConfigLoader) CreateSampleConfiguration() *LoadBalancingConfig {
 				Enabled:        true,
 				Workspaces: []PoolWorkspace{
 					{
-						WorkspaceID:          "gmail-medical-1",
+						ProviderID:          "gmail-medical-1",
 						Weight:               1.0,
 						Enabled:              true,
 						MinCapacityThreshold: 0.2, // 20% minimum capacity for critical notifications
 					},
 					{
-						WorkspaceID:          "mailgun-medical-1",
+						ProviderID:          "mailgun-medical-1",
 						Weight:               1.0,
 						Enabled:              true,
 						MinCapacityThreshold: 0.2,

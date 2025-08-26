@@ -450,7 +450,7 @@ func (ct *CapacityTracker) GetWorkspaceUtilization(workspaceID string) (map[stri
 	}
 
 	return map[string]interface{}{
-		"workspace_id":     workspaceID,
+		"provider_id":     workspaceID,
 		"sent":            wsSent,
 		"remaining":       wsRemaining,
 		"limit":           workspaceLimit,

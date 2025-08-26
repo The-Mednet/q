@@ -258,6 +258,12 @@ export function UserRateLimitsConfig({ workspaceId }: UserRateLimitsConfigProps)
                           color="error"
                           size="small"
                           variant="outlined"
+                          sx={{ 
+                            fontSize: '0.75rem',
+                            py: 0.25,
+                            px: 1,
+                            minWidth: 'auto'
+                          }}
                         >
                           Remove
                         </Button>

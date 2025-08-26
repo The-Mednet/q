@@ -98,7 +98,7 @@ func (api *PoolsAPI) ListPools(w http.ResponseWriter, r *http.Request) {
 
 		// Get pool members
 		memberQuery := `
-			SELECT workspace_id FROM pool_members 
+			SELECT provider_id FROM pool_members 
 			WHERE pool_id = ? AND enabled = true
 			ORDER BY priority, weight DESC
 		`
@@ -154,7 +154,7 @@ func (api *PoolsAPI) CreatePool(w http.ResponseWriter, r *http.Request) {
 	// Add pool members
 	for i, providerID := range req.Providers {
 		memberQuery := `
-			INSERT INTO pool_members (pool_id, workspace_id, weight, priority, enabled)
+			INSERT INTO pool_members (pool_id, provider_id, weight, priority, enabled)
 			VALUES (?, ?, ?, ?, ?)
 		`
 		_, err = tx.Exec(memberQuery, req.ID, providerID, 1, i, true)
@@ -204,7 +204,7 @@ func (api *PoolsAPI) GetPool(w http.ResponseWriter, r *http.Request) {
 
 	// Get pool members
 	memberQuery := `
-		SELECT workspace_id FROM pool_members 
+		SELECT provider_id FROM pool_members 
 		WHERE pool_id = ? AND enabled = true
 		ORDER BY priority, weight DESC
 	`
@@ -285,7 +285,7 @@ func (api *PoolsAPI) UpdatePool(w http.ResponseWriter, r *http.Request) {
 	// Then add/update the new members
 	for i, providerID := range req.Providers {
 		memberQuery := `
-			INSERT INTO pool_members (pool_id, workspace_id, weight, priority, enabled)
+			INSERT INTO pool_members (pool_id, provider_id, weight, priority, enabled)
 			VALUES (?, ?, ?, ?, ?)
 			ON DUPLICATE KEY UPDATE
 				weight = VALUES(weight),
@@ -342,7 +342,7 @@ func (api *PoolsAPI) GetSelections(w http.ResponseWriter, r *http.Request) {
 	}
 
 	query := `
-		SELECT pool_id, workspace_id, success, created_at
+		SELECT pool_id, provider_id, success, created_at
 		FROM provider_selections
 		ORDER BY created_at DESC
 		LIMIT ?

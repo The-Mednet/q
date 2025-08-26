@@ -17,7 +17,7 @@ func TestCapacityWeightedSelector_Select(t *testing.T) {
 		candidates := []WorkspaceCandidate{
 			{
 				Workspace: PoolWorkspace{
-					WorkspaceID: "workspace1",
+					ProviderID: "workspace1",
 					Weight:      1.0,
 					Enabled:     true,
 				},
@@ -32,7 +32,7 @@ func TestCapacityWeightedSelector_Select(t *testing.T) {
 			},
 			{
 				Workspace: PoolWorkspace{
-					WorkspaceID: "workspace2",
+					ProviderID: "workspace2",
 					Weight:      1.0,
 					Enabled:     true,
 				},
@@ -53,8 +53,8 @@ func TestCapacityWeightedSelector_Select(t *testing.T) {
 		}
 
 		// The workspace with higher capacity should be preferred
-		if selected.Workspace.WorkspaceID != "workspace1" {
-			t.Errorf("Expected workspace1, got: %s", selected.Workspace.WorkspaceID)
+		if selected.Workspace.ProviderID != "workspace1" {
+			t.Errorf("Expected workspace1, got: %s", selected.Workspace.ProviderID)
 		}
 
 		if selected.Score <= 0 {
@@ -66,7 +66,7 @@ func TestCapacityWeightedSelector_Select(t *testing.T) {
 		candidates := []WorkspaceCandidate{
 			{
 				Workspace: PoolWorkspace{
-					WorkspaceID: "low-capacity-high-weight",
+					ProviderID: "low-capacity-high-weight",
 					Weight:      5.0, // Very high weight
 					Enabled:     true,
 				},
@@ -81,7 +81,7 @@ func TestCapacityWeightedSelector_Select(t *testing.T) {
 			},
 			{
 				Workspace: PoolWorkspace{
-					WorkspaceID: "high-capacity-low-weight",
+					ProviderID: "high-capacity-low-weight",
 					Weight:      0.5, // Low weight
 					Enabled:     true,
 				},
@@ -103,7 +103,7 @@ func TestCapacityWeightedSelector_Select(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Selection %d failed: %v", i, err)
 			}
-			selections[selected.Workspace.WorkspaceID]++
+			selections[selected.Workspace.ProviderID]++
 		}
 
 		// Both should be selected, but we can't test exact distribution due to randomness
@@ -125,7 +125,7 @@ func TestCapacityWeightedSelector_Select(t *testing.T) {
 		candidates := []WorkspaceCandidate{
 			{
 				Workspace: PoolWorkspace{
-					WorkspaceID: "healthy",
+					ProviderID: "healthy",
 					Weight:      1.0,
 					Enabled:     true,
 				},
@@ -140,7 +140,7 @@ func TestCapacityWeightedSelector_Select(t *testing.T) {
 			},
 			{
 				Workspace: PoolWorkspace{
-					WorkspaceID: "unhealthy",
+					ProviderID: "unhealthy",
 					Weight:      2.0, // Higher weight but unhealthy
 					Enabled:     true,
 				},
@@ -161,8 +161,8 @@ func TestCapacityWeightedSelector_Select(t *testing.T) {
 		}
 
 		// Should select the healthy workspace
-		if selected.Workspace.WorkspaceID != "healthy" {
-			t.Errorf("Expected healthy workspace, got: %s", selected.Workspace.WorkspaceID)
+		if selected.Workspace.ProviderID != "healthy" {
+			t.Errorf("Expected healthy workspace, got: %s", selected.Workspace.ProviderID)
 		}
 	})
 
@@ -172,7 +172,7 @@ func TestCapacityWeightedSelector_Select(t *testing.T) {
 		candidates := []WorkspaceCandidate{
 			{
 				Workspace: PoolWorkspace{
-					WorkspaceID: "below-threshold",
+					ProviderID: "below-threshold",
 					Weight:      1.0,
 					Enabled:     true,
 				},
@@ -187,7 +187,7 @@ func TestCapacityWeightedSelector_Select(t *testing.T) {
 			},
 			{
 				Workspace: PoolWorkspace{
-					WorkspaceID: "above-threshold",
+					ProviderID: "above-threshold",
 					Weight:      1.0,
 					Enabled:     true,
 				},
@@ -208,8 +208,8 @@ func TestCapacityWeightedSelector_Select(t *testing.T) {
 		}
 
 		// Should select the workspace above threshold
-		if selected.Workspace.WorkspaceID != "above-threshold" {
-			t.Errorf("Expected above-threshold workspace, got: %s", selected.Workspace.WorkspaceID)
+		if selected.Workspace.ProviderID != "above-threshold" {
+			t.Errorf("Expected above-threshold workspace, got: %s", selected.Workspace.ProviderID)
 		}
 	})
 
@@ -217,7 +217,7 @@ func TestCapacityWeightedSelector_Select(t *testing.T) {
 		candidates := []WorkspaceCandidate{
 			{
 				Workspace: PoolWorkspace{
-					WorkspaceID: "disabled",
+					ProviderID: "disabled",
 					Weight:      2.0,
 					Enabled:     false, // Disabled
 				},
@@ -232,7 +232,7 @@ func TestCapacityWeightedSelector_Select(t *testing.T) {
 			},
 			{
 				Workspace: PoolWorkspace{
-					WorkspaceID: "enabled",
+					ProviderID: "enabled",
 					Weight:      1.0,
 					Enabled:     true, // Enabled
 				},
@@ -253,8 +253,8 @@ func TestCapacityWeightedSelector_Select(t *testing.T) {
 		}
 
 		// Should select the enabled workspace
-		if selected.Workspace.WorkspaceID != "enabled" {
-			t.Errorf("Expected enabled workspace, got: %s", selected.Workspace.WorkspaceID)
+		if selected.Workspace.ProviderID != "enabled" {
+			t.Errorf("Expected enabled workspace, got: %s", selected.Workspace.ProviderID)
 		}
 	})
 
@@ -278,7 +278,7 @@ func TestCapacityWeightedSelector_Select(t *testing.T) {
 		candidates := []WorkspaceCandidate{
 			{
 				Workspace: PoolWorkspace{
-					WorkspaceID: "zero-capacity",
+					ProviderID: "zero-capacity",
 					Weight:      1.0,
 					Enabled:     true,
 				},
@@ -303,7 +303,7 @@ func TestCapacityWeightedSelector_Select(t *testing.T) {
 		candidates := []WorkspaceCandidate{
 			{
 				Workspace: PoolWorkspace{
-					WorkspaceID: "test-workspace",
+					ProviderID: "test-workspace",
 					Weight:      2.5,
 					Enabled:     true,
 				},
@@ -441,7 +441,7 @@ func TestCapacityWeightedSelector_GetSelectionStats(t *testing.T) {
 		candidates := []WorkspaceCandidate{
 			{
 				Workspace: PoolWorkspace{
-					WorkspaceID: "ws1",
+					ProviderID: "ws1",
 					Weight:      2.0,
 					Enabled:     true,
 				},
@@ -454,7 +454,7 @@ func TestCapacityWeightedSelector_GetSelectionStats(t *testing.T) {
 			},
 			{
 				Workspace: PoolWorkspace{
-					WorkspaceID: "ws2",
+					ProviderID: "ws2",
 					Weight:      1.0,
 					Enabled:     true,
 				},
@@ -519,7 +519,7 @@ func BenchmarkCapacityWeightedSelector_Select(b *testing.B) {
 	for i := 0; i < 10; i++ {
 		candidates[i] = WorkspaceCandidate{
 			Workspace: PoolWorkspace{
-				WorkspaceID: fmt.Sprintf("workspace%d", i),
+				ProviderID: fmt.Sprintf("workspace%d", i),
 				Weight:      float64(i + 1),
 				Enabled:     true,
 			},
@@ -552,7 +552,7 @@ func BenchmarkCapacityWeightedSelector_SelectLarge(b *testing.B) {
 	for i := 0; i < 100; i++ {
 		candidates[i] = WorkspaceCandidate{
 			Workspace: PoolWorkspace{
-				WorkspaceID: fmt.Sprintf("workspace%d", i),
+				ProviderID: fmt.Sprintf("workspace%d", i),
 				Weight:      1.0 + float64(i%5)*0.2,
 				Enabled:     i%10 != 0, // 90% enabled
 			},

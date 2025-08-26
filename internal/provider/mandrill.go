@@ -175,9 +175,9 @@ func (m *MandrillProvider) SendEmail(ctx context.Context, msg *models.Message, o
 		if result, ok := results[0].(map[string]interface{}); ok {
 			status, _ := result["status"].(string)
 			if status == "sent" || status == "queued" || status == "scheduled" {
-				// Success - store message ID if available
+				// Success - log the Mandrill message ID but don't overwrite our ID
 				if msgID, ok := result["_id"].(string); ok {
-					msg.ID = msgID
+					log.Printf("Mandrill message sent successfully with Mandrill ID: %s (our ID: %s)", msgID, msg.ID)
 				}
 				return nil
 			}

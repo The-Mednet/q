@@ -82,7 +82,7 @@ func (api *ProvidersAPI) ListWorkspaces(w http.ResponseWriter, r *http.Request) 
 		       rate_limit_per_user_daily, rate_limit_custom_users,
 		       provider_type, provider_config, enabled, created_at, updated_at,
 		       CASE WHEN service_account_json IS NOT NULL AND service_account_json != '' THEN 1 ELSE 0 END as has_credentials
-		FROM workspaces
+		FROM providers
 		ORDER BY created_at DESC
 	`
 
@@ -179,7 +179,7 @@ func (api *ProvidersAPI) CreateWorkspace(w http.ResponseWriter, r *http.Request)
 	customLimits, _ := json.Marshal(req.RateLimits.CustomUserLimits)
 
 	query := `
-		INSERT INTO workspaces (
+		INSERT INTO providers (
 			id, display_name, domain, rate_limit_workspace_daily,
 			rate_limit_per_user_daily, rate_limit_custom_users,
 			provider_type, provider_config, enabled
@@ -214,7 +214,7 @@ func (api *ProvidersAPI) GetWorkspace(w http.ResponseWriter, r *http.Request) {
 		       rate_limit_per_user_daily, rate_limit_custom_users,
 		       provider_type, provider_config, enabled, created_at, updated_at,
 		       CASE WHEN service_account_json IS NOT NULL AND service_account_json != '' THEN 1 ELSE 0 END as has_credentials
-		FROM workspaces
+		FROM providers
 		WHERE id = ?
 	`
 
@@ -290,7 +290,7 @@ func (api *ProvidersAPI) UpdateWorkspace(w http.ResponseWriter, r *http.Request)
 	customLimits, _ := json.Marshal(req.RateLimits.CustomUserLimits)
 
 	query := `
-		UPDATE workspaces SET
+		UPDATE providers SET
 			display_name = ?, domain = ?, rate_limit_workspace_daily = ?,
 			rate_limit_per_user_daily = ?, rate_limit_custom_users = ?,
 			provider_type = ?, provider_config = ?, enabled = ?,
@@ -327,7 +327,7 @@ func (api *ProvidersAPI) DeleteWorkspace(w http.ResponseWriter, r *http.Request)
 	vars := mux.Vars(r)
 	id := vars["id"]
 
-	query := `DELETE FROM workspaces WHERE id = ?`
+	query := `DELETE FROM providers WHERE id = ?`
 	result, err := api.db.Exec(query, id)
 
 	if err != nil {
@@ -394,7 +394,7 @@ func (api *ProvidersAPI) UploadCredentials(w http.ResponseWriter, r *http.Reques
 
 	// Update the workspace with the new credentials
 	query := `
-		UPDATE workspaces 
+		UPDATE providers 
 		SET service_account_json = ?,
 		    credentials_updated_at = NOW(),
 		    provider_config = JSON_SET(COALESCE(provider_config, '{}'), 
@@ -417,7 +417,7 @@ func (api *ProvidersAPI) UploadCredentials(w http.ResponseWriter, r *http.Reques
 
 	// Log the credential upload
 	auditQuery := `
-		INSERT INTO credential_audit_log (workspace_id, action, performed_by, details)
+		INSERT INTO credential_audit_log (provider_id, action, performed_by, details)
 		VALUES (?, 'uploaded', ?, ?)
 	`
 	auditDetails := fmt.Sprintf(`{"filename": "%s", "size": %d}`, header.Filename, header.Size)
@@ -428,7 +428,7 @@ func (api *ProvidersAPI) UploadCredentials(w http.ResponseWriter, r *http.Reques
 		"success": true,
 		"message": "Credentials uploaded successfully",
 		"filename": header.Filename,
-		"workspace_id": id,
+		"provider_id": id,
 	}
 
 	w.Header().Set("Content-Type", "application/json")

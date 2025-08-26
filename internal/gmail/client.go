@@ -52,13 +52,13 @@ func (c *Client) SendMessage(ctx context.Context, msg *models.Message) error {
 	// Set provider ID on message for tracking
 	msg.ProviderID = workspace.ID
 
-	// Extract campaign and user IDs from headers
+	// Extract invitation tracking IDs from headers or metadata
 	if msg.Headers != nil {
-		if campaignID, exists := msg.Headers["X-Campaign-ID"]; exists {
-			msg.CampaignID = campaignID
-		}
-		if userID, exists := msg.Headers["X-User-ID"]; exists {
-			msg.UserID = userID
+		// Try X-MC-Metadata which contains the invitation tracking
+		if mcMetadata, exists := msg.Headers["X-MC-Metadata"]; exists {
+			// The metadata is already parsed in the SMTP server
+			// so we don't need to do anything here
+			_ = mcMetadata
 		}
 	}
 

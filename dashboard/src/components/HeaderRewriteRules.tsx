@@ -49,9 +49,10 @@ interface HeaderRewriteRulesProps {
   providers: WorkspaceProvider[];
   onProviderUpdated: () => void;
   workspaceId?: string;  // If provided, show only for this workspace's providers
+  onClose?: () => void;
 }
 
-export function HeaderRewriteRules({ providers, onProviderUpdated, workspaceId }: HeaderRewriteRulesProps) {
+export function HeaderRewriteRules({ providers, onProviderUpdated, workspaceId, onClose }: HeaderRewriteRulesProps) {
   const [headerRulesByProvider, setHeaderRulesByProvider] = useState<Record<number, ProviderHeaderRewriteRule[]>>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -542,6 +543,15 @@ export function HeaderRewriteRules({ providers, onProviderUpdated, workspaceId }
         </Stack>
       )}
 
+      {/* Close button at bottom if onClose is provided */}
+      {onClose && (
+        <Box display="flex" justifyContent="flex-end" mt={3}>
+          <Button onClick={onClose}>
+            Close
+          </Button>
+        </Box>
+      )}
+
       {/* Create Header Rule Dialog */}
       <Dialog
         open={createDialogOpen}
@@ -550,13 +560,16 @@ export function HeaderRewriteRules({ providers, onProviderUpdated, workspaceId }
         fullWidth
       >
         <DialogTitle>Create Header Rewrite Rule</DialogTitle>
-        <DialogContent>
-          <Stack spacing={3} sx={{ mt: 1 }}>
+        <DialogContent sx={{ mt: 1 }}>
+          <Box sx={{ pt: 1 }}>
+            <Stack spacing={2.5} sx={{ width: '100%' }}>
             {/* Only show provider selection if not in workspace context */}
             {!workspaceId && (
               <FormControl fullWidth required>
-                <InputLabel>Provider</InputLabel>
+                <InputLabel id="provider-select-label">Provider</InputLabel>
                 <Select
+                  labelId="provider-select-label"
+                  label="Provider"
                   value={formData.provider_id}
                   onChange={(e) => handleInputChange('provider_id', e.target.value)}
                 >
@@ -579,8 +592,10 @@ export function HeaderRewriteRules({ providers, onProviderUpdated, workspaceId }
             />
             
             <FormControl fullWidth required>
-              <InputLabel>Action</InputLabel>
+              <InputLabel id="action-select-label">Action</InputLabel>
               <Select
+                labelId="action-select-label"
+                label="Action"
                 value={formData.action}
                 onChange={(e) => handleInputChange('action', e.target.value)}
               >
@@ -622,7 +637,8 @@ export function HeaderRewriteRules({ providers, onProviderUpdated, workspaceId }
               }
               label="Enabled"
             />
-          </Stack>
+            </Stack>
+          </Box>
         </DialogContent>
         <DialogActions>
           <Button onClick={handleCreateDialogClose} disabled={creating}>

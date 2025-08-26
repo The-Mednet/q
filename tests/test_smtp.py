@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Test script for sending emails through the Q SMTP relay service.
-Tests workspace routing, campaign tracking, and user tracking.
+Tests provider routing, header rewrite rules, campaign tracking, and rate limiting.
 """
 
 import smtplib
@@ -14,24 +14,33 @@ from datetime import datetime
 def send_test_email(
     smtp_host="localhost",
     smtp_port=2525,
-    from_email="brian@joinmednet.org",
+    from_email="test@joinmednet.org",
     from_name=None,
-    to_email="b@smada.org",
-    campaign_id=123,
-    user_id=456,
-    subject="Get Expert Answers to Complex Clinical Questions",
+    to_email="recipient@example.com",
+    invitation_id=None,
+    email_type=None,
+    invitation_dispatch_id=None,
+    subject=None,
     message_type="text",
     custom_text=None,
     custom_html=None,
-    message_file=None
+    message_file=None,
+    tags=None,
+    metadata=None
 ):
-    """Send a test email through the Q SMTP relay"""
+    """Send a test email through the Q SMTP relay
+    
+    Uses X-MC-Metadata header for invitation tracking with fields:
+    - invitation_id: The invitation ID
+    - email_type: Type of email (e.g., 'invite', 'reminder', 'follow_up')
+    - invitation_dispatch_id: The dispatch batch ID
+    """
     
     # Generate defaults if not provided
-    if not campaign_id:
-        campaign_id = f"test-campaign-{uuid.uuid4().hex[:8]}"
-    if not user_id:
-        user_id = f"user-{uuid.uuid4().hex[:6]}"
+    if not invitation_id:
+        invitation_id = f"inv-{uuid.uuid4().hex[:8]}"
+    if not email_type:
+        email_type = "invite"
     if not subject:
         subject = f"Test Email - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
     
@@ -73,8 +82,8 @@ Internal Medicine Deputy Editor, theMednet
 
 ---
 Test email sent via Q SMTP Relay
-Campaign ID: {campaign_id}
-User ID: {user_id}
+Invitation ID: {invitation_id}
+Email Type: {email_type}
 From: {from_email}
 Timestamp: {datetime.now().isoformat()}
             """.strip()
@@ -105,8 +114,8 @@ Timestamp: {datetime.now().isoformat()}
     <hr>
     <div style="background: #f5f5f5; padding: 10px; font-size: 12px; color: #666;">
         <strong>Test Email Metadata:</strong><br>
-        Campaign ID: {campaign_id}<br>
-        User ID: {user_id}<br>
+        Invitation ID: {invitation_id}<br>
+        Email Type: {email_type}<br>
         From: {from_email}<br>
         Timestamp: {datetime.now().isoformat()}
     </div>
@@ -137,8 +146,8 @@ Internal Medicine Deputy Editor, theMednet
 
 ---
 Test Email Metadata:
-Campaign ID: {campaign_id}
-User ID: {user_id}
+Invitation ID: {invitation_id}
+Email Type: {email_type}
 From: {from_email}
 Timestamp: {datetime.now().isoformat()}
             """.strip()
@@ -153,11 +162,31 @@ Timestamp: {datetime.now().isoformat()}
     msg["To"] = to_email
     msg["Subject"] = subject
     
-    # Add custom tracking headers
-    msg["X-Campaign-ID"] = campaign_id
-    msg["X-User-ID"] = user_id
+    # Build metadata for X-MC-Metadata header
+    mc_metadata = {
+        "invitation_id": invitation_id,
+        "email_type": email_type
+    }
+    if invitation_dispatch_id:
+        mc_metadata["invitation_dispatch_id"] = invitation_dispatch_id
     
-    # Add additional test headers
+    # Add any additional metadata passed in
+    if metadata:
+        mc_metadata.update(metadata)
+    
+    # Add Mandrill-compatible headers
+    import json
+    # Use compact JSON without spaces to avoid header folding issues
+    msg["X-MC-Metadata"] = json.dumps(mc_metadata, separators=(',', ':'))
+    
+    # Add tags if provided
+    if tags:
+        if isinstance(tags, list):
+            msg["X-MC-Tags"] = json.dumps(tags)
+        else:
+            msg["X-MC-Tags"] = str(tags)
+    
+    # Add test identification headers
     msg["X-Test-Script"] = "q-smtp-test.py"
     msg["X-Test-Timestamp"] = datetime.now().isoformat()
     
@@ -175,8 +204,10 @@ Timestamp: {datetime.now().isoformat()}
             print(f"   From: {from_email}")
             print(f"   To: {to_email}")
             print(f"   Subject: {subject}")
-            print(f"   Campaign ID: {campaign_id}")
-            print(f"   User ID: {user_id}")
+            print(f"   Invitation ID: {invitation_id}")
+            print(f"   Email Type: {email_type}")
+            if invitation_dispatch_id:
+                print(f"   Dispatch ID: {invitation_dispatch_id}")
             
             return True
             
@@ -184,28 +215,33 @@ Timestamp: {datetime.now().isoformat()}
         print(f"❌ Failed to send email: {e}")
         return False
 
-def test_workspace_routing():
-    """Test different workspace routing scenarios"""
+def test_provider_routing():
+    """Test different provider routing scenarios"""
     
     test_cases = [
         {
-            "name": "Direct workspace match",
+            "name": "Gmail provider - joinmednet.org",
             "from_email": "doctor1@joinmednet.org",
-            "description": "Should route to joinmednet.org workspace"
+            "description": "Should route to gmail-joinmednet provider"
         },
         {
-            "name": "Legacy domain random routing", 
-            "from_email": "user@mednet.org",
-            "description": "Should randomly select workspace for legacy domain"
+            "name": "Gmail provider - mednetmail.org",
+            "from_email": "user@mednetmail.org",
+            "description": "Should route to mednetmail provider"
         },
         {
-            "name": "Another legacy domain",
-            "from_email": "sender@themednet.org", 
-            "description": "Should randomly select workspace for legacy domain"
+            "name": "Mailgun provider", 
+            "from_email": "sender@mail.joinmednet.org",
+            "description": "Should route to mailgun-primary provider"
+        },
+        {
+            "name": "Mandrill provider",
+            "from_email": "transactional@transactional.joinmednet.org", 
+            "description": "Should route to mandrill-transactional provider"
         }
     ]
     
-    print("\n🧪 Testing Workspace Routing...\n")
+    print("\n🧪 Testing Provider Routing...\n")
     
     for i, test in enumerate(test_cases, 1):
         print(f"Test {i}: {test['name']}")
@@ -214,9 +250,100 @@ def test_workspace_routing():
         success = send_test_email(
             from_email=test["from_email"],
             to_email="test-recipient@example.com",
-            campaign_id=f"routing-test-{i}",
-            user_id=f"test-user-{i}",
-            subject=f"Workspace Routing Test {i}: {test['name']}"
+            invitation_id=f"routing-test-{i}",
+            email_type="test",
+            subject=f"Provider Routing Test {i}: {test['name']}"
+        )
+        
+        if success:
+            print("✅ Test passed\n")
+        else:
+            print("❌ Test failed\n")
+
+def test_header_rewrite():
+    """Test header rewrite rules"""
+    
+    print("\n🧪 Testing Header Rewrite Rules...\n")
+    
+    test_cases = [
+        {
+            "name": "Custom tracking header",
+            "from_email": "test@joinmednet.org",
+            "headers": {
+                "X-Custom-Track": "test-123",
+                "X-Source-System": "mednet-q",
+                "X-Priority": "high"
+            },
+            "description": "Testing custom header addition"
+        },
+        {
+            "name": "Provider-specific headers",
+            "from_email": "test@mail.joinmednet.org", 
+            "headers": {
+                "X-Mailgun-Tag": "important",
+                "X-Provider": "mailgun"
+            },
+            "description": "Testing provider-specific headers for Mailgun"
+        }
+    ]
+    
+    for i, test in enumerate(test_cases, 1):
+        print(f"Test {i}: {test['name']}")
+        print(f"Description: {test['description']}")
+        
+        # Create message with custom headers
+        msg = MIMEText(f"Testing header rewrite rules - Test {i}")
+        msg["From"] = test["from_email"]
+        msg["To"] = "test@example.com"
+        msg["Subject"] = f"Header Rewrite Test {i}: {test['name']}"
+        
+        # Add custom headers
+        for header, value in test.get("headers", {}).items():
+            msg[header] = value
+            print(f"   Adding header: {header} = {value}")
+        
+        try:
+            with smtplib.SMTP("localhost", 2525) as server:
+                server.send_message(msg)
+                print("✅ Test passed\n")
+        except Exception as e:
+            print(f"❌ Test failed: {e}\n")
+
+def test_provider_configs():
+    """Test provider-specific configurations"""
+    
+    print("\n🧪 Testing Provider Configurations...\n")
+    
+    test_cases = [
+        {
+            "name": "Gmail provider with default sender",
+            "from_email": "noreply@joinmednet.org",
+            "to_email": "test@example.com",
+            "description": "Testing Gmail provider with configured default sender"
+        },
+        {
+            "name": "Mailgun provider with tracking",
+            "from_email": "tracking@mail.joinmednet.org",
+            "to_email": "test@example.com",
+            "headers": {
+                "X-Mailgun-Track": "yes",
+                "X-Mailgun-Track-Opens": "yes",
+                "X-Mailgun-Track-Clicks": "yes"
+            },
+            "description": "Testing Mailgun provider with tracking options"
+        }
+    ]
+    
+    for i, test in enumerate(test_cases, 1):
+        print(f"Test {i}: {test['name']}")
+        print(f"Description: {test['description']}")
+        
+        success = send_test_email(
+            from_email=test["from_email"],
+            to_email=test.get("to_email", "test@example.com"),
+            subject=f"Provider Config Test {i}: {test['name']}",
+            invitation_id=f"config-test-{i}",
+            email_type="test"
         )
         
         if success:
@@ -230,7 +357,7 @@ def test_rate_limiting():
     print("\n🧪 Testing Rate Limiting...\n")
     
     from_email = "rate-test@joinmednet.org"
-    campaign_id = f"rate-limit-test-{uuid.uuid4().hex[:8]}"
+    invitation_id = f"rate-limit-test-{uuid.uuid4().hex[:8]}"
     
     print(f"Sending 5 emails quickly from {from_email}")
     print("This should help test the rate limiting functionality.\n")
@@ -240,8 +367,8 @@ def test_rate_limiting():
         success = send_test_email(
             from_email=from_email,
             to_email=f"test{i}@example.com",
-            campaign_id=campaign_id,
-            user_id=f"rate-test-user-{i}",
+            invitation_id=invitation_id,
+            email_type="test",
             subject=f"Rate Limit Test Email {i}/5",
             message_type="html"
         )
@@ -262,22 +389,34 @@ def main():
                        help="Sender display name (e.g., 'Dr. John Smith')")
     parser.add_argument("--to", dest="to_email", default="recipient@example.com",
                        help="Recipient email address")
-    parser.add_argument("--campaign", dest="campaign_id", help="Campaign ID")
-    parser.add_argument("--user", dest="user_id", help="User ID")
+    parser.add_argument("--invitation", dest="invitation_id", help="Invitation ID")
+    parser.add_argument("--email-type", dest="email_type", help="Email type (e.g., invite, reminder, follow_up)")
+    parser.add_argument("--dispatch", dest="invitation_dispatch_id", help="Invitation dispatch ID")
     parser.add_argument("--subject", help="Email subject")
     parser.add_argument("--html", action="store_true", help="Send HTML email")
     parser.add_argument("--text", help="Custom plain text message content")
     parser.add_argument("--html-content", help="Custom HTML message content")
     parser.add_argument("--file", help="Read message content from file (.txt for plain text, .html for HTML)")
     parser.add_argument("--test-routing", action="store_true", 
-                       help="Run workspace routing tests")
+                       help="Run provider routing tests")
+    parser.add_argument("--test-headers", action="store_true",
+                       help="Run header rewrite tests")
     parser.add_argument("--test-rate-limit", action="store_true",
                        help="Run rate limiting tests")
+    parser.add_argument("--test-all", action="store_true",
+                       help="Run all tests")
     
     args = parser.parse_args()
     
-    if args.test_routing:
-        test_workspace_routing()
+    if args.test_all:
+        test_provider_routing()
+        test_header_rewrite()
+        test_provider_configs()
+        test_rate_limiting()
+    elif args.test_routing:
+        test_provider_routing()
+    elif args.test_headers:
+        test_header_rewrite()
     elif args.test_rate_limit:
         test_rate_limiting()
     else:
@@ -289,8 +428,9 @@ def main():
             from_email=args.from_email,
             from_name=args.from_name,
             to_email=args.to_email,
-            campaign_id=args.campaign_id,
-            user_id=args.user_id,
+            invitation_id=args.invitation_id,
+            email_type=args.email_type,
+            invitation_dispatch_id=args.invitation_dispatch_id,
             subject=args.subject,
             message_type=message_type,
             custom_text=args.text,

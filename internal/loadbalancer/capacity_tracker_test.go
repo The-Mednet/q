@@ -565,8 +565,8 @@ func TestCapacityTracker_UtilityMethods(t *testing.T) {
 			t.Fatalf("GetWorkspaceUtilization failed: %v", err)
 		}
 
-		if utilization["workspace_id"] != "utility-test-workspace" {
-			t.Errorf("Expected workspace_id 'utility-test-workspace', got: %v", utilization["workspace_id"])
+		if utilization["provider_id"] != "utility-test-workspace" {
+			t.Errorf("Expected provider_id 'utility-test-workspace', got: %v", utilization["provider_id"])
 		}
 
 		if utilization["sent"] != 300 {

@@ -67,44 +67,32 @@ export default function ProvidersPage() {
   const [settingsWorkspaceId, setSettingsWorkspaceId] = useState<string>('');
   const [tabValue, setTabValue] = useState(0);
 
-  // Fetch all providers for all workspaces
+  // Fetch all providers (just once, since we no longer have workspace grouping)
   useEffect(() => {
     const fetchAllProviders = async () => {
-      if (!workspaces || workspaces.length === 0) {
-        setProviders([]);
-        setLoadingProviders(false);
-        return;
-      }
-
       try {
         setLoadingProviders(true);
-        const allProviders: WorkspaceProvider[] = [];
-        
-        for (const workspace of workspaces) {
-          const workspaceProviders = await ProviderManagementService.getWorkspaceProviders(workspace.id);
-          if (workspaceProviders && workspaceProviders.length > 0) {
-            allProviders.push(...workspaceProviders);
-          }
-        }
-        
-        setProviders(allProviders);
+        // Just fetch once using any ID - the API returns all providers now
+        const allProviders = await ProviderManagementService.getWorkspaceProviders('all');
+        setProviders(allProviders || []);
       } catch (err) {
         console.error('Error fetching providers:', err);
+        setProviders([]);
       } finally {
         setLoadingProviders(false);
       }
     };
 
     fetchAllProviders();
-  }, [workspaces]);
+  }, []);
 
   const handleOpenDialog = (provider?: WorkspaceProvider, workspaceId?: string) => {
     if (provider) {
       setSelectedProvider(provider);
-      setSelectedWorkspaceId(provider.workspace_id || '');
+      setSelectedWorkspaceId(provider.provider_id || '');
     } else {
       setSelectedProvider(null);
-      setSelectedWorkspaceId(workspaceId || workspaces?.[0]?.id || '');
+      setSelectedWorkspaceId(workspaceId || 'new-provider');
     }
     setDialogOpen(true);
   };
@@ -116,17 +104,13 @@ export default function ProvidersPage() {
   };
 
   const handleProviderUpdated = async () => {
-    // Refresh providers list
-    const allProviders: WorkspaceProvider[] = [];
-    if (workspaces) {
-      for (const workspace of workspaces) {
-        const workspaceProviders = await ProviderManagementService.getWorkspaceProviders(workspace.id);
-        if (workspaceProviders && workspaceProviders.length > 0) {
-          allProviders.push(...workspaceProviders);
-        }
-      }
+    // Refresh providers list - just fetch once since API returns all providers
+    try {
+      const allProviders = await ProviderManagementService.getWorkspaceProviders('all');
+      setProviders(allProviders || []);
+    } catch (err) {
+      console.error('Error fetching providers:', err);
     }
-    setProviders(allProviders);
     handleCloseDialog();
   };
 
@@ -168,8 +152,7 @@ export default function ProvidersPage() {
   };
 
   const getWorkspaceName = (workspaceId: string) => {
-    const workspace = workspaces?.find(w => w.id === workspaceId);
-    return workspace?.display_name || workspace?.id || workspaceId;
+    return workspaceId;
   };
 
   if (isLoading || loadingProviders) {
@@ -203,7 +186,6 @@ export default function ProvidersPage() {
 
       <GridLegacy container spacing={3}>
         {providers.map((provider) => {
-          const workspace = workspaces?.find(w => w.id === provider.workspace_id);
           return (
             <GridLegacy item xs={12} md={6} lg={4} key={provider.id}>
               <Card>
@@ -213,11 +195,11 @@ export default function ProvidersPage() {
                       <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1 }}>
                         <Box sx={{ fontSize: '1.5rem' }}>{getProviderIcon(provider.type)}</Box>
                         <Typography variant="h6">
-                          {provider.type.charAt(0).toUpperCase() + provider.type.slice(1)}
+                          {provider.display_name || provider.name || (provider.type.charAt(0).toUpperCase() + provider.type.slice(1))}
                         </Typography>
                       </Box>
                       <Typography variant="body2" color="textSecondary" gutterBottom>
-                        {workspace?.domain || 'No domain'}
+                        {provider.domain || 'No domain'}
                       </Typography>
                       <Box sx={{ display: 'flex', gap: 1, mt: 1 }}>
                         <Chip
@@ -233,12 +215,6 @@ export default function ProvidersPage() {
                         />
                       </Box>
                     </Box>
-                  </Box>
-
-                  <Box sx={{ mt: 2 }}>
-                    <Typography variant="caption" color="textSecondary">
-                      {getWorkspaceName(provider.workspace_id || '')}
-                    </Typography>
                   </Box>
                 </CardContent>
                 <CardActions sx={{ px: 2, pb: 2 }}>
@@ -257,7 +233,7 @@ export default function ProvidersPage() {
                     Configure
                   </Button>
                   <Button
-                    onClick={() => handleOpenSettings(provider.workspace_id || '')}
+                    onClick={() => handleOpenSettings(provider.provider_id || '')}
                     size="small"
                     variant="outlined"
                     sx={{ 
@@ -325,13 +301,15 @@ export default function ProvidersPage() {
         <DialogTitle>
           {selectedProvider ? 'Edit Provider Configuration' : 'Configure Provider'}
         </DialogTitle>
-        <DialogContent>
-          <ProviderConfigForm
-            workspaceId={selectedWorkspaceId}
-            provider={selectedProvider}
-            onSaved={handleProviderUpdated}
-            onCancel={handleCloseDialog}
-          />
+        <DialogContent sx={{ mt: 1 }}>
+          <Box sx={{ pt: 1 }}>
+            <ProviderConfigForm
+              workspaceId={selectedWorkspaceId}
+              provider={selectedProvider}
+              onSaved={handleProviderUpdated}
+              onCancel={handleCloseDialog}
+            />
+          </Box>
         </DialogContent>
       </Dialog>
 
@@ -355,7 +333,10 @@ export default function ProvidersPage() {
           </Box>
           
           <TabPanel value={tabValue} index={0}>
-            <RateLimitsConfig workspaceId={settingsWorkspaceId} />
+            <RateLimitsConfig 
+              workspaceId={settingsWorkspaceId} 
+              onClose={() => setSettingsDialogOpen(false)}
+            />
           </TabPanel>
 
           <TabPanel value={tabValue} index={1}>
@@ -364,15 +345,13 @@ export default function ProvidersPage() {
 
           <TabPanel value={tabValue} index={2}>
             <HeaderRewriteRules 
-              providers={providers.filter(p => p.workspace_id === settingsWorkspaceId)}
+              providers={providers.filter(p => p.provider_id === settingsWorkspaceId)}
               onProviderUpdated={handleProviderUpdated}
               workspaceId={settingsWorkspaceId}
+              onClose={() => setSettingsDialogOpen(false)}
             />
           </TabPanel>
         </DialogContent>
-        <DialogActions>
-          <Button onClick={() => setSettingsDialogOpen(false)}>Close</Button>
-        </DialogActions>
       </Dialog>
 
       {/* Delete Confirmation Dialog */}

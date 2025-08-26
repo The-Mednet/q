@@ -92,7 +92,7 @@ func (cws *CapacityWeightedSelector) Select(ctx context.Context, candidates []Wo
 	selected.SelectionReason = cws.generateSelectionReason(selected, len(candidates), len(eligibleCandidates))
 
 	log.Printf("Selected workspace %s for sender %s: score=%.4f, capacity=%.2f%%, weight=%.2f, reason=%s",
-		selected.Workspace.WorkspaceID, senderEmail, selected.Score,
+		selected.Workspace.ProviderID, senderEmail, selected.Score,
 		selected.Capacity.RemainingPercentage*100, selected.Workspace.Weight, selected.SelectionReason)
 
 	return selected, nil
@@ -115,7 +115,7 @@ func (cws *CapacityWeightedSelector) filterEligibleCandidates(candidates []Works
 
 		// Skip if capacity information is missing or invalid
 		if candidate.Capacity == nil {
-			log.Printf("Warning: Skipping candidate %s - missing capacity information", candidate.Workspace.WorkspaceID)
+			log.Printf("Warning: Skipping candidate %s - missing capacity information", candidate.Workspace.ProviderID)
 			continue
 		}
 
@@ -127,7 +127,7 @@ func (cws *CapacityWeightedSelector) filterEligibleCandidates(candidates []Works
 
 		if candidate.Capacity.RemainingPercentage < minCapacity {
 			log.Printf("Candidate %s below capacity threshold: %.2f%% < %.2f%%", 
-				candidate.Workspace.WorkspaceID, 
+				candidate.Workspace.ProviderID, 
 				candidate.Capacity.RemainingPercentage*100, 
 				minCapacity*100)
 			continue
@@ -136,14 +136,14 @@ func (cws *CapacityWeightedSelector) filterEligibleCandidates(candidates []Works
 		// Check if workspace has any remaining capacity
 		if candidate.Capacity.EffectiveRemaining <= 0 {
 			log.Printf("Candidate %s has no remaining capacity: %d", 
-				candidate.Workspace.WorkspaceID, candidate.Capacity.EffectiveRemaining)
+				candidate.Workspace.ProviderID, candidate.Capacity.EffectiveRemaining)
 			continue
 		}
 
 		// Check health score (should be > 0.5 for good health)
 		if candidate.HealthScore < 0.5 {
 			log.Printf("Candidate %s has poor health score: %.2f", 
-				candidate.Workspace.WorkspaceID, candidate.HealthScore)
+				candidate.Workspace.ProviderID, candidate.HealthScore)
 			continue
 		}
 
@@ -183,7 +183,7 @@ func (cws *CapacityWeightedSelector) calculateCapacityWeightedScores(candidates 
 	for i, candidate := range candidates {
 		score, err := cws.calculateCandidateScore(candidate, senderEmail)
 		if err != nil {
-			log.Printf("Warning: Failed to calculate score for candidate %s: %v", candidate.Workspace.WorkspaceID, err)
+			log.Printf("Warning: Failed to calculate score for candidate %s: %v", candidate.Workspace.ProviderID, err)
 			score = 0.001 // Minimal score to avoid division by zero
 		}
 

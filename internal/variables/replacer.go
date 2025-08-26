@@ -153,16 +153,9 @@ func (vr *VariableReplacer) getTrendingQuestionReplacement(ctx context.Context, 
 		}
 	}
 
-	// Try to extract user ID from message if not provided in params
+	// Try to extract user ID from message metadata if not provided in params
 	if userID == nil {
-		// First try the UserID field from the message
-		if msg.UserID != "" {
-			if id, err := strconv.Atoi(msg.UserID); err == nil && id > 0 {
-				userID = &id
-			}
-		}
-
-		// Fallback to metadata if UserID field is empty
+		// Check metadata for user information
 		if userID == nil {
 			if recipientData, ok := msg.Metadata["recipient"]; ok {
 				if recipientMap, ok := recipientData.(map[string]interface{}); ok {

@@ -380,7 +380,7 @@ func (s *Server) handleGetLoadBalancingSelections(w http.ResponseWriter, r *http
 		{
 			"pool_id":        "general-pool",
 			"pool_name":      "General Email Distribution",
-			"workspace_id":   "mandrill-transactional",
+			"provider_id":   "mandrill-transactional",
 			"sender_email":   "info@mednet.org",
 			"selected_at":    now.Add(-2 * time.Minute).Format("2006-01-02 15:04:05"),
 			"capacity_score": "80.30%",
@@ -388,7 +388,7 @@ func (s *Server) handleGetLoadBalancingSelections(w http.ResponseWriter, r *http
 		{
 			"pool_id":        "medical-notifications-pool",
 			"pool_name":      "Medical Notification Distribution",
-			"workspace_id":   "mailgun-primary",
+			"provider_id":   "mailgun-primary",
 			"sender_email":   "alert@notifications.mednet.org",
 			"selected_at":    now.Add(-3 * time.Minute).Format("2006-01-02 15:04:05"),
 			"capacity_score": "80.30%",
@@ -396,7 +396,7 @@ func (s *Server) handleGetLoadBalancingSelections(w http.ResponseWriter, r *http
 		{
 			"pool_id":        "invite-domain-pool",
 			"pool_name":      "Invite Domain Distribution",
-			"workspace_id":   "mailgun-primary",
+			"provider_id":   "mailgun-primary",
 			"sender_email":   "test@invitations.mednet.org",
 			"selected_at":    now.Add(-4 * time.Minute).Format("2006-01-02 15:04:05"),
 			"capacity_score": "81.95%",
@@ -404,7 +404,7 @@ func (s *Server) handleGetLoadBalancingSelections(w http.ResponseWriter, r *http
 		{
 			"pool_id":        "invite-domain-pool",
 			"pool_name":      "Invite Domain Distribution",
-			"workspace_id":   "mandrill-transactional",
+			"provider_id":   "mandrill-transactional",
 			"sender_email":   "test@invite.com",
 			"selected_at":    now.Add(-5 * time.Minute).Format("2006-01-02 15:04:05"),
 			"capacity_score": "80.30%",

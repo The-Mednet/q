@@ -163,9 +163,11 @@ func (s *Session) Mail(from string, opts *smtp.MailOptions) error {
 	var actualFrom string = from
 	
 	if s.workspaceManager != nil {
+		log.Printf("DEBUG: Getting workspace for sender: %s", from)
 		result, err := s.workspaceManager.GetWorkspaceForSenderWithRewrite(from)
 		if err == nil && result != nil {
 			providerID = result.Workspace.ID
+			log.Printf("DEBUG: Found workspace %s for sender %s (NeedsDomainRewrite=%v)", providerID, from, result.NeedsDomainRewrite)
 			
 			// If domain rewriting is needed, modify the sender address
 			if result.NeedsDomainRewrite {
@@ -286,102 +288,54 @@ func (s *Session) parseMessage(data []byte) error {
 	lines := strings.Split(string(data), "\n")
 	headers := true
 	var body strings.Builder
+	
+	// Variables to handle multi-line headers (RFC 5322 folding)
+	var currentHeaderKey string
+	var currentHeaderValue strings.Builder
 
 	for _, line := range lines {
 		if headers {
 			if line == "" || line == "\r" {
+				// Process any pending header before switching to body
+				if currentHeaderKey != "" {
+					s.processHeader(currentHeaderKey, strings.TrimSpace(currentHeaderValue.String()))
+					currentHeaderKey = ""
+					currentHeaderValue.Reset()
+				}
 				headers = false
 				continue
 			}
 
+			// Check if this is a continuation of the previous header (starts with whitespace)
+			if (strings.HasPrefix(line, " ") || strings.HasPrefix(line, "\t")) && currentHeaderKey != "" {
+				// This is a continuation line - append to current header value
+				currentHeaderValue.WriteString(" ")
+				currentHeaderValue.WriteString(strings.TrimSpace(line))
+				continue
+			}
+
+			// Process any pending header
+			if currentHeaderKey != "" {
+				s.processHeader(currentHeaderKey, strings.TrimSpace(currentHeaderValue.String()))
+				currentHeaderKey = ""
+				currentHeaderValue.Reset()
+			}
+
+			// Parse new header
 			parts := strings.SplitN(line, ":", 2)
 			if len(parts) == 2 {
-				key := strings.TrimSpace(parts[0])
-				value := strings.TrimSpace(parts[1])
-
-				switch strings.ToLower(key) {
-				case "subject":
-					// Validate subject
-					if err := validation.ValidateSubject(value); err != nil {
-						log.Printf("Invalid subject: %v", err)
-						value = validation.SanitizeString(value) // Sanitize instead of rejecting
-					}
-					s.message.Subject = value
-				case "content-type":
-					if strings.Contains(strings.ToLower(value), "text/html") {
-						s.message.Headers["Content-Type"] = value
-					}
-				case "cc":
-					s.message.CC = parseAddresses(value)
-				case "bcc":
-					s.message.BCC = parseAddresses(value)
-				case "x-mc-tags":
-					// Store the original header for visibility
-					s.message.Headers["X-MC-Tags"] = value
-					// Parse tags array - could be JSON array or comma-separated
-					tags := parseTagsHeader(value)
-					if len(tags) > 0 {
-						if s.message.Metadata == nil {
-							s.message.Metadata = make(map[string]interface{})
-						}
-						s.message.Metadata["tags"] = tags
-					}
-				case "x-mc-metadata":
-					// Store the original header for visibility
-					s.message.Headers["X-MC-Metadata"] = value
-					// Parse JSON metadata
-					if err := parseMCMetadata(value, s.message); err != nil {
-						log.Printf("Warning: Failed to parse X-MC-Metadata: %v", err)
-					}
-				case "x-campaign-id":
-					// Legacy support - still accept direct header if provided
-					if err := validation.ValidateCampaignID(value); err != nil {
-						log.Printf("Invalid campaign ID: %v", err)
-						continue // Skip invalid campaign ID
-					}
-					if s.message.CampaignID == "" { // Don't override if already set from X-MC-Metadata
-						s.message.CampaignID = value
-					}
-				case "x-notification-id":
-					// Legacy support - still accept direct header if provided
-					if value != "" && s.message.NotificationID == "" { // Don't override if already set from X-MC-Metadata
-						s.message.NotificationID = value
-					}
-				case "x-user-id":
-					// Legacy support - still accept direct header if provided
-					if err := validation.ValidateUserID(value); err != nil {
-						log.Printf("Invalid user ID: %v", err)
-						continue // Skip invalid user ID
-					}
-					if s.message.UserID == "" { // Don't override if already set from X-MC-Metadata
-						s.message.UserID = value
-					}
-				default:
-					// Apply header modifications based on workspace provider
-					modifiedValue := s.modifyHeaderForProvider(key, value)
-					// Check if header should be removed
-					if modifiedValue != "__REMOVE_HEADER__" {
-						s.message.Headers[key] = modifiedValue
-					} else {
-						log.Printf("DEBUG: Removing header %s based on workspace rules", key)
-					}
-
-					// Extract recipient metadata from X-Recipient-* headers
-					if strings.HasPrefix(strings.ToLower(key), "x-recipient-") {
-						if s.message.Metadata["recipient"] == nil {
-							s.message.Metadata["recipient"] = make(map[string]interface{})
-						}
-						recipientKey := strings.TrimPrefix(strings.ToLower(key), "x-recipient-")
-						if recipientMap, ok := s.message.Metadata["recipient"].(map[string]interface{}); ok {
-							recipientMap[recipientKey] = value
-						}
-					}
-				}
+				currentHeaderKey = strings.TrimSpace(parts[0])
+				currentHeaderValue.WriteString(strings.TrimSpace(parts[1]))
 			}
 		} else {
 			body.WriteString(line)
 			body.WriteString("\n")
 		}
+	}
+	
+	// Process any remaining header
+	if headers && currentHeaderKey != "" {
+		s.processHeader(currentHeaderKey, strings.TrimSpace(currentHeaderValue.String()))
 	}
 
 	bodyContent := strings.TrimSpace(body.String())
@@ -411,6 +365,65 @@ func (s *Session) parseMessage(data []byte) error {
 	s.addMissingHeaders()
 
 	return nil
+}
+
+// processHeader processes a single header key-value pair
+func (s *Session) processHeader(key, value string) {
+	switch strings.ToLower(key) {
+	case "subject":
+		// Validate subject
+		if err := validation.ValidateSubject(value); err != nil {
+			log.Printf("Invalid subject: %v", err)
+			value = validation.SanitizeString(value) // Sanitize instead of rejecting
+		}
+		s.message.Subject = value
+	case "content-type":
+		s.message.Headers["Content-Type"] = value
+	case "content-transfer-encoding":
+		s.message.Headers["Content-Transfer-Encoding"] = value
+	case "cc":
+		s.message.CC = parseAddresses(value)
+	case "bcc":
+		s.message.BCC = parseAddresses(value)
+	case "x-mc-tags":
+		// Store the original header for visibility
+		s.message.Headers["X-MC-Tags"] = value
+		// Parse tags array - could be JSON array or comma-separated
+		tags := parseTagsHeader(value)
+		if len(tags) > 0 {
+			if s.message.Metadata == nil {
+				s.message.Metadata = make(map[string]interface{})
+			}
+			s.message.Metadata["tags"] = tags
+		}
+	case "x-mc-metadata":
+		// Store the original header for visibility
+		s.message.Headers["X-MC-Metadata"] = value
+		// Parse JSON metadata
+		if err := parseMCMetadata(value, s.message); err != nil {
+			log.Printf("Warning: Failed to parse X-MC-Metadata: %v", err)
+		}
+	default:
+		// Apply header modifications based on workspace provider
+		modifiedValue := s.modifyHeaderForProvider(key, value)
+		// Check if header should be removed
+		if modifiedValue != "__REMOVE_HEADER__" {
+			s.message.Headers[key] = modifiedValue
+		} else {
+			log.Printf("DEBUG: Removing header %s based on workspace rules", key)
+		}
+
+		// Extract recipient metadata from X-Recipient-* headers
+		if strings.HasPrefix(strings.ToLower(key), "x-recipient-") {
+			if s.message.Metadata["recipient"] == nil {
+				s.message.Metadata["recipient"] = make(map[string]interface{})
+			}
+			recipientKey := strings.TrimPrefix(strings.ToLower(key), "x-recipient-")
+			if recipientMap, ok := s.message.Metadata["recipient"].(map[string]interface{}); ok {
+				recipientMap[recipientKey] = value
+			}
+		}
+	}
 }
 
 // modifyHeaderForProvider modifies headers based on the workspace provider type
@@ -731,20 +744,17 @@ func parseMCMetadata(jsonStr string, msg *models.Message) error {
 		return err
 	}
 	
-	// Extract known fields based on the PHP code structure
+	// Extract invitation tracking fields
 	if invitationID, ok := getStringFromInterface(metadata["invitation_id"]); ok && invitationID != "" {
-		msg.CampaignID = invitationID // Map invitation_id to campaign_id
+		msg.InvitationID = invitationID
 	}
 	
 	if emailType, ok := getStringFromInterface(metadata["email_type"]); ok && emailType != "" {
-		msg.NotificationID = emailType // Map email_type to notification_id
+		msg.EmailType = emailType
 	}
 	
 	if dispatchID, ok := getStringFromInterface(metadata["invitation_dispatch_id"]); ok && dispatchID != "" {
-		if msg.Metadata == nil {
-			msg.Metadata = make(map[string]interface{})
-		}
-		msg.Metadata["invitation_dispatch_id"] = dispatchID
+		msg.InvitationDispatchID = dispatchID
 	}
 	
 	// Store all metadata for reference

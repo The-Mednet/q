@@ -30,15 +30,16 @@ interface ProviderConfigFormProps {
 
 interface FormData {
   name: string;
+  domain: string;
   type: 'gmail' | 'mailgun' | 'mandrill';
   enabled: boolean;
   priority: number;
   config: {
     // Gmail config
     service_account_file?: string;
+    service_account_json?: string;
     default_sender?: string;
-    delegated_user?: string;
-    scopes?: string[];
+    has_uploaded_credentials?: boolean;
     
     // Mailgun config
     api_key?: string;
@@ -62,6 +63,7 @@ const DEFAULT_MANDRILL_BASE_URL = 'https://mandrillapp.com/api/1.0';
 export function ProviderConfigForm({ workspaceId, provider, onSaved, onCancel }: ProviderConfigFormProps) {
   const [formData, setFormData] = useState<FormData>({
     name: '',
+    domain: '',
     type: 'gmail',
     enabled: true,
     priority: 1,
@@ -69,13 +71,15 @@ export function ProviderConfigForm({ workspaceId, provider, onSaved, onCancel }:
   });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [scopeInput, setScopeInput] = useState('');
 
   useEffect(() => {
     if (provider) {
       // Populate form with existing provider data
       setFormData({
-        name: provider.name,
+        name: provider.name || provider.display_name || '',
+        domain: provider.domain || '',
         type: provider.type,
         enabled: provider.enabled,
         priority: provider.priority,
@@ -165,6 +169,31 @@ export function ProviderConfigForm({ workspaceId, provider, onSaved, onCancel }:
     }));
   };
 
+  const handleServiceAccountUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    try {
+      const text = await file.text();
+      const json = JSON.parse(text); // Validate it's valid JSON
+      
+      // Store the JSON content
+      setFormData(prev => ({
+        ...prev,
+        config: {
+          ...prev.config,
+          service_account_json: text,
+          has_uploaded_credentials: true,
+        },
+      }));
+      
+      setError(null);
+      setSuccessMessage(`Service account JSON uploaded successfully (${file.name})`);
+    } catch (err) {
+      setError('Invalid JSON file. Please upload a valid service account JSON file.');
+    }
+  };
+
   const handleAddScope = () => {
     if (scopeInput.trim() && formData.config.scopes) {
       const newScopes = [...formData.config.scopes, scopeInput.trim()];
@@ -199,9 +228,6 @@ export function ProviderConfigForm({ workspaceId, provider, onSaved, onCancel }:
         if (!formData.config.api_key?.trim()) {
           return 'API key is required for Mailgun';
         }
-        if (!formData.config.domain?.trim()) {
-          return 'Domain is required for Mailgun';
-        }
         break;
       case 'mandrill':
         if (!formData.config.api_key?.trim()) {
@@ -224,12 +250,20 @@ export function ProviderConfigForm({ workspaceId, provider, onSaved, onCancel }:
     setError(null);
 
     try {
+      // Prepare config without sensitive data for provider_config column
+      const configForStorage = { ...formData.config };
+      const serviceAccountJson = configForStorage.service_account_json;
+      delete configForStorage.service_account_json; // Don't store in provider_config
+      delete configForStorage.has_uploaded_credentials; // This is computed
+      
       const requestData = {
         name: formData.name,
+        domain: formData.domain,
         type: formData.type,
         enabled: formData.enabled,
         priority: formData.priority,
-        config: formData.config,
+        config: configForStorage,
+        service_account_json: serviceAccountJson, // Send separately for service_account_json column
       };
 
       if (provider) {
@@ -251,13 +285,54 @@ export function ProviderConfigForm({ workspaceId, provider, onSaved, onCancel }:
 
   const renderGmailConfig = () => (
     <Stack spacing={3}>
-      <TextField
-        label="Service Account File Path"
-        value={formData.config.service_account_file || ''}
-        onChange={(e) => handleConfigChange('service_account_file', e.target.value)}
-        fullWidth
-        helperText="Path to the service account JSON file (e.g., credentials/service-account.json)"
-      />
+      <Box>
+        <Typography variant="subtitle2" gutterBottom>
+          Service Account Credentials
+        </Typography>
+        {successMessage ? (
+          <Alert severity="success" sx={{ mb: 2 }} onClose={() => setSuccessMessage(null)}>
+            {successMessage}
+          </Alert>
+        ) : formData.config.has_uploaded_credentials ? (
+          <Alert severity="success" sx={{ mb: 2 }}>
+            Service account credentials ready to be saved
+          </Alert>
+        ) : provider?.config?.has_uploaded_credentials ? (
+          <Alert severity="success" sx={{ mb: 2 }}>
+            Service account credentials are stored in the database
+          </Alert>
+        ) : (
+          <Alert severity="info" sx={{ mb: 2 }}>
+            Upload a service account JSON file or specify a file path
+          </Alert>
+        )}
+        
+        <Stack spacing={2}>
+          <Button
+            variant="outlined"
+            component="label"
+            fullWidth
+          >
+            Upload Service Account JSON
+            <input
+              type="file"
+              hidden
+              accept=".json,application/json"
+              onChange={handleServiceAccountUpload}
+            />
+          </Button>
+          
+          <Divider>OR</Divider>
+          
+          <TextField
+            label="Service Account File Path"
+            value={formData.config.service_account_file || ''}
+            onChange={(e) => handleConfigChange('service_account_file', e.target.value)}
+            fullWidth
+            helperText="Path to the service account JSON file on server (e.g., credentials/service-account.json)"
+          />
+        </Stack>
+      </Box>
       
       <TextField
         label="Default Sender Email"
@@ -266,45 +341,8 @@ export function ProviderConfigForm({ workspaceId, provider, onSaved, onCancel }:
         fullWidth
         required
         type="email"
-        helperText="Default email address for sending emails"
+        helperText="Default email address for sending emails (e.g., noreply@yourdomain.com)"
       />
-      
-      <TextField
-        label="Delegated User (Optional)"
-        value={formData.config.delegated_user || ''}
-        onChange={(e) => handleConfigChange('delegated_user', e.target.value)}
-        fullWidth
-        type="email"
-        helperText="Email address for domain-wide delegation (if applicable)"
-      />
-      
-      <Box>
-        <Typography variant="subtitle2" gutterBottom>
-          OAuth Scopes
-        </Typography>
-        <Stack direction="row" spacing={1} mb={2} flexWrap="wrap">
-          {formData.config.scopes?.map((scope, index) => (
-            <Chip
-              key={index}
-              label={scope}
-              onDelete={() => handleRemoveScope(scope)}
-              size="small"
-            />
-          ))}
-        </Stack>
-        <Box display="flex" gap={1}>
-          <TextField
-            label="Add Scope"
-            value={scopeInput}
-            onChange={(e) => setScopeInput(e.target.value)}
-            size="small"
-            onKeyPress={(e) => e.key === 'Enter' && handleAddScope()}
-          />
-          <Button onClick={handleAddScope} variant="outlined" size="small">
-            Add
-          </Button>
-        </Box>
-      </Box>
     </Stack>
   );
 
@@ -321,45 +359,12 @@ export function ProviderConfigForm({ workspaceId, provider, onSaved, onCancel }:
       />
       
       <TextField
-        label="Domain"
-        value={formData.config.domain || ''}
-        onChange={(e) => handleConfigChange('domain', e.target.value)}
-        fullWidth
-        required
-        helperText="Your Mailgun domain (e.g., mail.yourdomain.com)"
-      />
-      
-      <TextField
         label="Base URL"
         value={formData.config.base_url || ''}
         onChange={(e) => handleConfigChange('base_url', e.target.value)}
         fullWidth
-        helperText="Mailgun API base URL"
+        helperText="Mailgun API base URL (e.g., https://api.mailgun.net/v3)"
       />
-      
-      <Box>
-        <Typography variant="subtitle2" gutterBottom>
-          Tracking Options
-        </Typography>
-        <FormControlLabel
-          control={
-            <Switch
-              checked={formData.config.track_opens || false}
-              onChange={(e) => handleConfigChange('track_opens', e.target.checked)}
-            />
-          }
-          label="Track Opens"
-        />
-        <FormControlLabel
-          control={
-            <Switch
-              checked={formData.config.track_clicks || false}
-              onChange={(e) => handleConfigChange('track_clicks', e.target.checked)}
-            />
-          }
-          label="Track Clicks"
-        />
-      </Box>
     </Stack>
   );
 
@@ -399,14 +404,14 @@ export function ProviderConfigForm({ workspaceId, provider, onSaved, onCancel }:
   };
 
   return (
-    <Box>
+    <Box sx={{ width: '100%' }}>
       {error && (
         <Alert severity="error" sx={{ mb: 2 }}>
           {error}
         </Alert>
       )}
 
-      <Stack spacing={3}>
+      <Stack spacing={2.5} sx={{ width: '100%' }}>
         <TextField
           label="Provider Name"
           value={formData.name}
@@ -416,9 +421,20 @@ export function ProviderConfigForm({ workspaceId, provider, onSaved, onCancel }:
           helperText="A descriptive name for this provider configuration"
         />
 
+        <TextField
+          label="Domain"
+          value={formData.domain}
+          onChange={(e) => handleInputChange('domain', e.target.value)}
+          fullWidth
+          required
+          helperText="The domain this provider will handle (e.g., yourdomain.com)"
+        />
+
         <FormControl fullWidth>
-          <InputLabel>Provider Type</InputLabel>
+          <InputLabel id="provider-type-label">Provider Type</InputLabel>
           <Select
+            labelId="provider-type-label"
+            label="Provider Type"
             value={formData.type}
             onChange={(e) => handleTypeChange(e.target.value as 'gmail' | 'mailgun' | 'mandrill')}
             disabled={!!provider} // Don't allow changing type for existing providers
@@ -434,6 +450,7 @@ export function ProviderConfigForm({ workspaceId, provider, onSaved, onCancel }:
           type="number"
           value={formData.priority}
           onChange={(e) => handleInputChange('priority', parseInt(e.target.value) || 1)}
+          fullWidth
           inputProps={{ min: 1 }}
           helperText="Lower numbers have higher priority (1 = highest)"
         />

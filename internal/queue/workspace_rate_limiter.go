@@ -187,14 +187,14 @@ func (warl *WorkspaceAwareRateLimiter) InitializeFromQueue(queue Queue) error {
 	for workspaceID, senderCounts := range counts {
 		log.Printf("Processing workspace '%s' with %d senders", workspaceID, len(senderCounts))
 
-		// Handle empty workspace_id by mapping from email domain
+		// Handle empty provider_id by mapping from email domain
 		if workspaceID == "" {
-			log.Printf("Empty workspace_id found, mapping by email domain")
+			log.Printf("Empty provider_id found, mapping by email domain")
 			for senderEmail, count := range senderCounts {
-				mappedWorkspaceID := warl.MapEmailToWorkspace(senderEmail)
-				if mappedWorkspaceID != "" {
-					log.Printf("Mapped %s to workspace %s", senderEmail, mappedWorkspaceID)
-					warl.initializeSenderCount(mappedWorkspaceID, senderEmail, count)
+				mappedProviderID := warl.MapEmailToWorkspace(senderEmail)
+				if mappedProviderID != "" {
+					log.Printf("Mapped %s to workspace %s", senderEmail, mappedProviderID)
+					warl.initializeSenderCount(mappedProviderID, senderEmail, count)
 					totalInitialized += count
 				} else {
 					log.Printf("Warning: Could not map email %s to any workspace", senderEmail)
@@ -343,7 +343,7 @@ func (warl *WorkspaceAwareRateLimiter) GetGlobalStatus() (totalSent int, workspa
 		}
 
 		stats := WorkspaceStats{
-			WorkspaceID:  workspaceID,
+			ProviderID:  workspaceID,
 			DisplayName:  workspace.DisplayName,
 			Domain:       workspace.GetPrimaryDomain(),
 			Domains:      workspace.Domains,
@@ -475,7 +475,7 @@ func (warl *WorkspaceAwareRateLimiter) getWorkspaceLimiter(workspaceID string, l
 
 // WorkspaceStats represents rate limit statistics for a workspace
 type WorkspaceStats struct {
-	WorkspaceID        string                 `json:"workspace_id"`
+	ProviderID        string                 `json:"provider_id"`
 	DisplayName        string                 `json:"display_name"`
 	Domain             string                 `json:"domain"`
 	Domains            []string               `json:"domains,omitempty"`

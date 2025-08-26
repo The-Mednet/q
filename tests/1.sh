@@ -1,10 +1,11 @@
 #!/bin/sh
 
 python tests/test_smtp.py \
-    --from "Dr. Brian Adamski Jr. <brian@themednet.org>" \
+    --from "Dr. Brian Adamski Jr. <brian@joinmednet.org>" \
     --to "Dr. Brian Adams <b@smada.org>" \
-    --campaign 123 \
-    --user 60952 \
+    --invitation 123 \
+    --email-type campaign\
+    --dispatch 1 \
     --subject "$1" \
     --file tests/1.txt
 

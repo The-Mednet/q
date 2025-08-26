@@ -213,12 +213,15 @@ func (mc *MailgunClient) sendMessageInternal(ctx context.Context, msg *models.Me
 
 	// Skip adding tags - user preference to not include Mailgun tags
 
-	// Add custom variables for tracking
-	if msg.CampaignID != "" {
-		form.Set("v:campaign_id", msg.CampaignID)
+	// Add custom variables for invitation tracking
+	if msg.InvitationID != "" {
+		form.Set("v:invitation_id", msg.InvitationID)
 	}
-	if msg.UserID != "" {
-		form.Set("v:user_id", msg.UserID)
+	if msg.EmailType != "" {
+		form.Set("v:email_type", msg.EmailType)
+	}
+	if msg.InvitationDispatchID != "" {
+		form.Set("v:invitation_dispatch_id", msg.InvitationDispatchID)
 	}
 	if msg.ID != "" {
 		form.Set("v:message_id", msg.ID)

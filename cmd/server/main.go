@@ -132,7 +132,7 @@ func main() {
 		log.Fatalf("Invalid workspace configuration: %v", err)
 	}
 	
-	log.Printf("Workspace manager initialized with %d workspaces", len(workspaceManager.GetWorkspaceIDs()))
+	log.Printf("Workspace manager initialized with %d workspaces", len(workspaceManager.GetProviderIDs()))
 
 	// Load balancing initialization will happen after provider router is initialized
 

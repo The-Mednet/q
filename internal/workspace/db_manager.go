@@ -49,11 +49,11 @@ func NewDBManager(db *sql.DB) (*Manager, error) {
 // loadWorkspacesFromDB loads all workspaces from the database
 func (m *DBManager) loadWorkspacesFromDB() error {
 	query := `
-		SELECT id, display_name, domain, 
+		SELECT provider_id, display_name, domain, 
 		       rate_limit_workspace_daily, rate_limit_per_user_daily,
 		       rate_limit_custom_users, provider_type, provider_config,
 		       enabled, service_account_json
-		FROM workspaces
+		FROM providers
 		WHERE enabled = 1
 		ORDER BY created_at DESC
 	`
@@ -103,29 +103,33 @@ func (m *DBManager) loadWorkspacesFromDB() error {
 			}
 		}
 		
-		// Parse provider configuration
-		if providerConfig.Valid && providerConfig.String != "" {
-			switch providerType {
-			case "gmail":
-				var gmailConfig config.WorkspaceGmailConfig
-				if err := json.Unmarshal([]byte(providerConfig.String), &gmailConfig); err == nil {
-					// If credentials are in the database, don't use file path
-					if serviceAccountJSON.Valid && serviceAccountJSON.String != "" {
-						gmailConfig.ServiceAccountFile = "" // Clear file path when using DB credentials
-					}
-					ws.Gmail = &gmailConfig
-				}
-			case "mailgun":
-				var mailgunConfig config.WorkspaceMailgunConfig
-				if err := json.Unmarshal([]byte(providerConfig.String), &mailgunConfig); err == nil {
-					ws.Mailgun = &mailgunConfig
-				}
-			case "mandrill":
-				var mandrillConfig config.WorkspaceMandrillConfig
-				if err := json.Unmarshal([]byte(providerConfig.String), &mandrillConfig); err == nil {
-					ws.Mandrill = &mandrillConfig
-				}
+		// Parse provider configuration and set enabled status
+		switch providerType {
+		case "gmail":
+			var gmailConfig config.WorkspaceGmailConfig
+			if providerConfig.Valid && providerConfig.String != "" {
+				json.Unmarshal([]byte(providerConfig.String), &gmailConfig)
 			}
+			// If credentials are in the database, don't use file path
+			if serviceAccountJSON.Valid && serviceAccountJSON.String != "" {
+				gmailConfig.ServiceAccountFile = "" // Clear file path when using DB credentials
+			}
+			gmailConfig.Enabled = enabled
+			ws.Gmail = &gmailConfig
+		case "mailgun":
+			var mailgunConfig config.WorkspaceMailgunConfig
+			if providerConfig.Valid && providerConfig.String != "" {
+				json.Unmarshal([]byte(providerConfig.String), &mailgunConfig)
+			}
+			mailgunConfig.Enabled = enabled
+			ws.Mailgun = &mailgunConfig
+		case "mandrill":
+			var mandrillConfig config.WorkspaceMandrillConfig
+			if providerConfig.Valid && providerConfig.String != "" {
+				json.Unmarshal([]byte(providerConfig.String), &mandrillConfig)
+			}
+			mandrillConfig.Enabled = enabled
+			ws.Mandrill = &mandrillConfig
 		}
 		
 		newWorkspaces[ws.ID] = &ws
@@ -204,7 +208,7 @@ func (m *DBManager) toManager() *Manager {
 func GetCredentialsFromDB(db *sql.DB, workspaceID string) ([]byte, error) {
 	query := `
 		SELECT service_account_json 
-		FROM workspaces 
+		FROM providers 
 		WHERE id = ? AND provider_type = 'gmail' 
 		  AND service_account_json IS NOT NULL
 	`

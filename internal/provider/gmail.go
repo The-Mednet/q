@@ -608,7 +608,7 @@ func (g *GmailProvider) GetProviderInfo() ProviderInfo {
 	}
 	
 	metadata := map[string]string{
-		"workspace_id":           g.workspaceID,
+		"provider_id":           g.workspaceID,
 		"credential_source":      credSource,
 		"require_valid_sender":   fmt.Sprintf("%v", g.config.RequireValidSender),
 		"cached_services":        fmt.Sprintf("%d", cacheStats["cached_services"]),

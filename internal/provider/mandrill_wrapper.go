@@ -169,7 +169,7 @@ func (m *MandrillProviderWrapper) GetStatus(ctx context.Context) (map[string]int
 	}
 	
 	// Add wrapper-specific information
-	status["workspace_id"] = m.workspaceID
+	status["provider_id"] = m.workspaceID
 	status["domain"] = m.domain
 	
 	m.mu.RLock()

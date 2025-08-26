@@ -78,9 +78,8 @@ func (bt BounceType) Value() (driver.Value, error) {
 type Recipient struct {
 	ID               int64                  `json:"id" db:"id"`
 	EmailAddress     string                 `json:"email_address" db:"email_address"`
-	WorkspaceID      string                 `json:"workspace_id" db:"workspace_id"`
-	UserID           *string                `json:"user_id,omitempty" db:"user_id"`
-	CampaignID       *string                `json:"campaign_id,omitempty" db:"campaign_id"`
+	ProviderID       string                 `json:"provider_id" db:"provider_id"`
+	InvitationID     *string                `json:"invitation_id,omitempty" db:"invitation_id"`
 	FirstName        *string                `json:"first_name,omitempty" db:"first_name"`
 	LastName         *string                `json:"last_name,omitempty" db:"last_name"`
 	Status           RecipientStatus        `json:"status" db:"status"`
@@ -236,7 +235,7 @@ type RecipientList struct {
 	ID          int64     `json:"id" db:"id"`
 	Name        string    `json:"name" db:"name"`
 	Description *string   `json:"description,omitempty" db:"description"`
-	WorkspaceID string    `json:"workspace_id" db:"workspace_id"`
+	ProviderID  string    `json:"provider_id" db:"provider_id"`
 	UserID      string    `json:"user_id" db:"user_id"`
 	IsActive    bool      `json:"is_active" db:"is_active"`
 	CreatedAt   time.Time `json:"created_at" db:"created_at"`
@@ -262,9 +261,9 @@ type RecipientSummary struct {
 	EngagementRate  float64    `json:"engagement_rate"`
 }
 
-// CampaignRecipientStats provides aggregated stats for a campaign
-type CampaignRecipientStats struct {
-	CampaignID      string  `json:"campaign_id"`
+// InvitationRecipientStats provides aggregated stats for an invitation campaign
+type InvitationRecipientStats struct {
+	InvitationID    string  `json:"invitation_id"`
 	TotalRecipients int     `json:"total_recipients"`
 	Sent            int     `json:"sent"`
 	Bounced         int     `json:"bounced"`

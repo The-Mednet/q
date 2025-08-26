@@ -167,11 +167,14 @@ func (m *MailgunProvider) SendMessage(ctx context.Context, msg *models.Message) 
 	// Skip adding tags - user preference to not include Mailgun tags
 	
 	// Add custom variables for tracking
-	if msg.CampaignID != "" {
-		form.Set("v:campaign_id", msg.CampaignID)
+	if msg.InvitationID != "" {
+		form.Set("v:invitation_id", msg.InvitationID)
 	}
-	if msg.UserID != "" {
-		form.Set("v:user_id", msg.UserID)
+	if msg.EmailType != "" {
+		form.Set("v:email_type", msg.EmailType)
+	}
+	if msg.InvitationDispatchID != "" {
+		form.Set("v:invitation_dispatch_id", msg.InvitationDispatchID)
 	}
 	if msg.ID != "" {
 		form.Set("v:message_id", msg.ID)
@@ -454,7 +457,7 @@ func (m *MailgunProvider) GetProviderInfo() ProviderInfo {
 			"analytics",
 		},
 		Metadata: map[string]string{
-			"workspace_id":   m.workspaceID,
+			"provider_id":   m.workspaceID,
 			"domains":        strings.Join(m.domains, ","),
 			"base_url":       m.config.BaseURL,
 			"region":         m.config.Region,

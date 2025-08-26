@@ -49,7 +49,7 @@ type LoadBalancingPool struct {
 
 // PoolWorkspace represents a workspace within a load balancing pool
 type PoolWorkspace struct {
-	WorkspaceID         string  `json:"workspace_id" db:"workspace_id"`
+	ProviderID         string  `json:"provider_id" db:"provider_id"`
 	Weight              float64 `json:"weight" db:"weight"`
 	Enabled             bool    `json:"enabled" db:"enabled"`
 	MinCapacityThreshold float64 `json:"min_capacity_threshold,omitempty"` // Minimum capacity % to be eligible
@@ -70,7 +70,7 @@ type PoolStatus struct {
 
 // WorkspaceStatus represents the status of a workspace within a pool
 type WorkspaceStatus struct {
-	WorkspaceID     string    `json:"workspace_id"`
+	ProviderID     string    `json:"provider_id"`
 	Weight          float64   `json:"weight"`
 	Enabled         bool      `json:"enabled"`
 	Healthy         bool      `json:"healthy"`
@@ -105,7 +105,7 @@ type WorkspaceCandidate struct {
 type LoadBalancingSelection struct {
 	ID            int64     `json:"id" db:"id"`
 	PoolID        string    `json:"pool_id" db:"pool_id"`
-	WorkspaceID   string    `json:"workspace_id" db:"workspace_id"`
+	ProviderID   string    `json:"provider_id" db:"provider_id"`
 	SenderEmail   string    `json:"sender_email" db:"sender_email"`
 	SelectedAt    time.Time `json:"selected_at" db:"selected_at"`
 	Success       bool      `json:"success" db:"success"`
@@ -145,7 +145,7 @@ type HealthChecker interface {
 
 // WorkspaceHealthInfo represents detailed health information for a workspace
 type WorkspaceHealthInfo struct {
-	WorkspaceID     string     `json:"workspace_id"`
+	ProviderID     string     `json:"provider_id"`
 	Healthy         bool       `json:"healthy"`
 	LastCheckTime   time.Time  `json:"last_check_time"`
 	LastError       *string    `json:"last_error,omitempty"`
@@ -200,7 +200,7 @@ type LoadBalancerError struct {
 	Type    string `json:"type"`
 	Message string `json:"message"`
 	PoolID  string `json:"pool_id,omitempty"`
-	WorkspaceID string `json:"workspace_id,omitempty"`
+	ProviderID string `json:"provider_id,omitempty"`
 	Cause   error  `json:"-"`
 }
 

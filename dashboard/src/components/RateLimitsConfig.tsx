@@ -27,9 +27,10 @@ import { ProviderManagementService } from '../services/providerManagement';
 
 interface RateLimitsConfigProps {
   workspaceId: string;
+  onClose?: () => void;
 }
 
-export function RateLimitsConfig({ workspaceId }: RateLimitsConfigProps) {
+export function RateLimitsConfig({ workspaceId, onClose }: RateLimitsConfigProps) {
   const [rateLimits, setRateLimits] = useState<WorkspaceRateLimitConfig | null>(null);
   const [formData, setFormData] = useState({
     daily: 1000,
@@ -252,17 +253,6 @@ export function RateLimitsConfig({ workspaceId }: RateLimitsConfigProps) {
             </Grid>
           </Grid>
 
-          <Box display="flex" justifyContent="flex-end" mt={3}>
-            <Button
-              variant="contained"
-              startIcon={<SaveIcon />}
-              onClick={handleSave}
-              disabled={saving || !hasChanges()}
-            >
-              {saving ? 'Saving...' : 'Save Rate Limits'}
-            </Button>
-          </Box>
-
           {rateLimits && (
             <Box mt={3} p={2} bgcolor="grey.50" borderRadius={1}>
               <Typography variant="subtitle2" color="text.secondary" gutterBottom>
@@ -272,6 +262,23 @@ export function RateLimitsConfig({ workspaceId }: RateLimitsConfigProps) {
           )}
         </CardContent>
       </Card>
+
+      <Box display="flex" justifyContent="flex-end" gap={2} mt={3}>
+        <Button
+          onClick={onClose}
+          disabled={!onClose}
+        >
+          Close
+        </Button>
+        <Button
+          variant="contained"
+          startIcon={<SaveIcon />}
+          onClick={handleSave}
+          disabled={saving || !hasChanges()}
+        >
+          {saving ? 'Saving...' : 'Save Rate Limits'}
+        </Button>
+      </Box>
     </Box>
   );
 }

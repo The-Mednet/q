@@ -170,7 +170,9 @@ export interface HeaderRewriteConfig {
 
 export interface WorkspaceProvider {
   id: number;
-  workspace_id: string;
+  provider_id: string;
+  display_name: string;
+  domain: string;
   type: 'gmail' | 'mailgun' | 'mandrill';
   name: string;
   enabled: boolean;

@@ -24,7 +24,7 @@ func NewAPIHandler(service *Service) *APIHandler {
 	}
 }
 
-// GetRecipient handles GET /api/recipients/{email}?workspace_id=xxx
+// GetRecipient handles GET /api/recipients/{email}?provider_id=xxx
 func (h *APIHandler) GetRecipient(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -39,10 +39,10 @@ func (h *APIHandler) GetRecipient(w http.ResponseWriter, r *http.Request) {
 	}
 
 	email := strings.ToLower(strings.TrimSpace(pathParts[0]))
-	workspaceID := r.URL.Query().Get("workspace_id")
+	workspaceID := r.URL.Query().Get("provider_id")
 
 	if workspaceID == "" {
-		http.Error(w, "workspace_id parameter required", http.StatusBadRequest)
+		http.Error(w, "provider_id parameter required", http.StatusBadRequest)
 		return
 	}
 
@@ -62,7 +62,7 @@ func (h *APIHandler) GetRecipient(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(recipient)
 }
 
-// GetRecipientSummary handles GET /api/recipients/{email}/summary?workspace_id=xxx
+// GetRecipientSummary handles GET /api/recipients/{email}/summary?provider_id=xxx
 func (h *APIHandler) GetRecipientSummary(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -77,10 +77,10 @@ func (h *APIHandler) GetRecipientSummary(w http.ResponseWriter, r *http.Request)
 	}
 
 	email := strings.ToLower(strings.TrimSpace(pathParts[0]))
-	workspaceID := r.URL.Query().Get("workspace_id")
+	workspaceID := r.URL.Query().Get("provider_id")
 
 	if workspaceID == "" {
-		http.Error(w, "workspace_id parameter required", http.StatusBadRequest)
+		http.Error(w, "provider_id parameter required", http.StatusBadRequest)
 		return
 	}
 
@@ -100,7 +100,7 @@ func (h *APIHandler) GetRecipientSummary(w http.ResponseWriter, r *http.Request)
 	json.NewEncoder(w).Encode(summary)
 }
 
-// GetCampaignStats handles GET /api/campaigns/{campaign_id}/stats?workspace_id=xxx
+// GetCampaignStats handles GET /api/campaigns/{campaign_id}/stats?provider_id=xxx
 func (h *APIHandler) GetCampaignStats(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -115,10 +115,10 @@ func (h *APIHandler) GetCampaignStats(w http.ResponseWriter, r *http.Request) {
 	}
 
 	campaignID := pathParts[0]
-	workspaceID := r.URL.Query().Get("workspace_id")
+	workspaceID := r.URL.Query().Get("provider_id")
 
 	if workspaceID == "" {
-		http.Error(w, "workspace_id parameter required", http.StatusBadRequest)
+		http.Error(w, "provider_id parameter required", http.StatusBadRequest)
 		return
 	}
 
@@ -148,10 +148,10 @@ func (h *APIHandler) UpdateRecipientStatus(w http.ResponseWriter, r *http.Reques
 	}
 
 	email := strings.ToLower(strings.TrimSpace(pathParts[0]))
-	workspaceID := r.URL.Query().Get("workspace_id")
+	workspaceID := r.URL.Query().Get("provider_id")
 
 	if workspaceID == "" {
-		http.Error(w, "workspace_id parameter required", http.StatusBadRequest)
+		http.Error(w, "provider_id parameter required", http.StatusBadRequest)
 		return
 	}
 
@@ -205,16 +205,16 @@ func (h *APIHandler) UpdateRecipientStatus(w http.ResponseWriter, r *http.Reques
 	json.NewEncoder(w).Encode(recipient)
 }
 
-// ListRecipients handles GET /api/recipients?workspace_id=xxx&status=xxx&limit=50&offset=0
+// ListRecipients handles GET /api/recipients?provider_id=xxx&status=xxx&limit=50&offset=0
 func (h *APIHandler) ListRecipients(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
-	workspaceID := r.URL.Query().Get("workspace_id")
+	workspaceID := r.URL.Query().Get("provider_id")
 	if workspaceID == "" {
-		http.Error(w, "workspace_id parameter required", http.StatusBadRequest)
+		http.Error(w, "provider_id parameter required", http.StatusBadRequest)
 		return
 	}
 
@@ -259,12 +259,12 @@ func (h *APIHandler) ListRecipients(w http.ResponseWriter, r *http.Request) {
 // listRecipients is a helper method to list recipients with filtering
 func (h *APIHandler) listRecipients(workspaceID, status string, limit, offset int) ([]*models.Recipient, error) {
 	query := `
-		SELECT id, email_address, workspace_id, user_id, campaign_id,
+		SELECT id, email_address, provider_id, user_id, campaign_id,
 			first_name, last_name, status, opt_in_date, opt_out_date,
 			bounce_count, last_bounce_date, bounce_type, metadata,
 			created_at, updated_at
 		FROM recipients
-		WHERE workspace_id = ?
+		WHERE provider_id = ?
 	`
 
 	args := []interface{}{workspaceID}
@@ -295,7 +295,7 @@ func (h *APIHandler) listRecipients(workspaceID, status string, limit, offset in
 		err := rows.Scan(
 			&recipient.ID,
 			&recipient.EmailAddress,
-			&recipient.WorkspaceID,
+			&recipient.ProviderID,
 			&userID,
 			&campaignID,
 			&firstName,
@@ -315,11 +315,8 @@ func (h *APIHandler) listRecipients(workspaceID, status string, limit, offset in
 		}
 
 		// Handle nullable fields
-		if userID.Valid {
-			recipient.UserID = &userID.String
-		}
 		if campaignID.Valid {
-			recipient.CampaignID = &campaignID.String
+			recipient.InvitationID = &campaignID.String
 		}
 		if firstName.Valid {
 			recipient.FirstName = &firstName.String

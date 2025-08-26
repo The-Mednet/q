@@ -17,8 +17,8 @@ var (
 	// Domain validation regex
 	domainRegex = regexp.MustCompile(`^([a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}$`)
 	
-	// Campaign ID validation - alphanumeric and hyphens
-	campaignRegex = regexp.MustCompile(`^[a-zA-Z0-9-_]+$`)
+	// Invitation ID validation - alphanumeric and hyphens
+	invitationRegex = regexp.MustCompile(`^[a-zA-Z0-9-_]+$`)
 	
 	// Header name validation - RFC 5322 compliant
 	headerNameRegex = regexp.MustCompile(`^[!-9;-~]+$`)
@@ -29,8 +29,7 @@ var (
 	maxBodyLength     = 25 * 1024 * 1024 // 25MB
 	maxHeaderValue    = 2048
 	maxRecipients     = 100
-	maxCampaignID     = 100
-	maxUserID         = 100
+	maxInvitationID   = 255
 )
 
 // ValidateEmail validates an email address
@@ -147,36 +146,52 @@ func ValidateDomain(domain string) error {
 	return nil
 }
 
-// ValidateCampaignID validates a campaign identifier
-func ValidateCampaignID(id string) error {
+// ValidateInvitationID validates an invitation identifier
+func ValidateInvitationID(id string) error {
 	if id == "" {
-		return nil // Campaign ID is optional
+		return nil // Invitation ID is optional
 	}
 	
-	if len(id) > maxCampaignID {
-		return fmt.Errorf("campaign ID too long (max %d characters)", maxCampaignID)
+	if len(id) > maxInvitationID {
+		return fmt.Errorf("invitation ID too long (max %d characters)", maxInvitationID)
 	}
 	
-	if !campaignRegex.MatchString(id) {
-		return fmt.Errorf("invalid campaign ID format (only alphanumeric, hyphens, and underscores allowed)")
+	if !invitationRegex.MatchString(id) {
+		return fmt.Errorf("invalid invitation ID format (only alphanumeric, hyphens, and underscores allowed)")
 	}
 	
 	return nil
 }
 
-// ValidateUserID validates a user identifier
-func ValidateUserID(id string) error {
-	if id == "" {
-		return nil // User ID is optional
+// ValidateEmailType validates an email type
+func ValidateEmailType(emailType string) error {
+	if emailType == "" {
+		return nil // Email type is optional
 	}
 	
-	if len(id) > maxUserID {
-		return fmt.Errorf("user ID too long (max %d characters)", maxUserID)
+	validTypes := []string{"invite", "reminder", "follow_up", "notification", "transactional"}
+	for _, validType := range validTypes {
+		if emailType == validType {
+			return nil
+		}
+	}
+	
+	return fmt.Errorf("invalid email type: %s", emailType)
+}
+
+// ValidateInvitationDispatchID validates an invitation dispatch identifier  
+func ValidateInvitationDispatchID(id string) error {
+	if id == "" {
+		return nil // Dispatch ID is optional
+	}
+	
+	if len(id) > maxInvitationID {
+		return fmt.Errorf("invitation dispatch ID too long (max %d characters)", maxInvitationID)
 	}
 	
 	// Check for SQL injection patterns
 	if strings.ContainsAny(id, "';\"") {
-		return fmt.Errorf("user ID contains illegal characters")
+		return fmt.Errorf("invitation dispatch ID contains illegal characters")
 	}
 	
 	return nil
@@ -242,8 +257,8 @@ func SanitizeString(s string) string {
 	return string(result)
 }
 
-// ValidateWorkspaceID validates a workspace identifier
-func ValidateWorkspaceID(id string) error {
+// ValidateProviderID validates a workspace identifier
+func ValidateProviderID(id string) error {
 	if id == "" {
 		return fmt.Errorf("workspace ID cannot be empty")
 	}

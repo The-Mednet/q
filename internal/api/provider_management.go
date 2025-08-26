@@ -29,8 +29,11 @@ func NewProviderManagementAPI(db *sql.DB) *ProviderManagementAPI {
 // Database Models
 type WorkspaceProvider struct {
 	ID          int       `json:"id"`
-	WorkspaceID string    `json:"workspace_id"`
+	ProviderID  string    `json:"provider_id"`
+	Name        string    `json:"name"`
 	Type        string    `json:"type"`
+	Domain      string    `json:"domain"`
+	DisplayName string    `json:"display_name"`
 	Enabled     bool      `json:"enabled"`
 	Priority    int       `json:"priority"`
 	CreatedAt   time.Time `json:"created_at"`
@@ -39,15 +42,13 @@ type WorkspaceProvider struct {
 }
 
 type GmailProviderConfig struct {
-	ID                int       `json:"id"`
-	ProviderID        int       `json:"provider_id"`
-	ServiceAccountFile string   `json:"service_account_file,omitempty"`
-	ServiceAccountEnv  string   `json:"service_account_env,omitempty"`
-	DefaultSender     string    `json:"default_sender"`
-	DelegatedUser     *string   `json:"delegated_user,omitempty"`
-	Scopes            []string  `json:"scopes"`
-	CreatedAt         time.Time `json:"created_at"`
-	UpdatedAt         time.Time `json:"updated_at"`
+	ID                     int       `json:"id"`
+	ProviderID             int       `json:"provider_id"`
+	ServiceAccountFile     string    `json:"service_account_file,omitempty"`
+	DefaultSender          string    `json:"default_sender"`
+	HasUploadedCredentials bool      `json:"has_uploaded_credentials"`
+	CreatedAt              time.Time `json:"created_at,omitempty"`
+	UpdatedAt              time.Time `json:"updated_at,omitempty"`
 }
 
 type MailgunProviderConfig struct {
@@ -74,7 +75,7 @@ type MandrillProviderConfig struct {
 }
 
 type WorkspaceRateLimit struct {
-	WorkspaceID   string `json:"workspace_id"`
+	ProviderID   string `json:"provider_id"`
 	Daily         int    `json:"daily"`
 	Hourly        int    `json:"hourly"`
 	PerUserDaily  int    `json:"per_user_daily"`
@@ -85,7 +86,7 @@ type WorkspaceRateLimit struct {
 
 type WorkspaceUserRateLimit struct {
 	ID          int       `json:"id"`
-	WorkspaceID string    `json:"workspace_id"`
+	ProviderID string    `json:"provider_id"`
 	UserEmail   string    `json:"user_email"`
 	Daily       int       `json:"daily"`
 	Hourly      int       `json:"hourly"`
@@ -107,17 +108,23 @@ type ProviderHeaderRewriteRule struct {
 
 // Request/Response Models
 type CreateProviderRequest struct {
-	WorkspaceID string      `json:"workspace_id"`
-	Type        string      `json:"type"`
-	Enabled     bool        `json:"enabled"`
-	Priority    int         `json:"priority"`
-	Config      interface{} `json:"config"`
+	ProviderID         string      `json:"provider_id"`
+	Name               string      `json:"name"`
+	Domain             string      `json:"domain"`
+	Type               string      `json:"type"`
+	Enabled            bool        `json:"enabled"`
+	Priority           int         `json:"priority"`
+	Config             interface{} `json:"config"`
+	ServiceAccountJSON string      `json:"service_account_json,omitempty"`
 }
 
 type UpdateProviderRequest struct {
-	Enabled  bool        `json:"enabled"`
-	Priority int         `json:"priority"`
-	Config   interface{} `json:"config"`
+	Name               string      `json:"name,omitempty"`
+	Domain             string      `json:"domain,omitempty"`
+	Enabled            bool        `json:"enabled"`
+	Priority           int         `json:"priority"`
+	Config             interface{} `json:"config"`
+	ServiceAccountJSON string      `json:"service_account_json,omitempty"`
 }
 
 type UpdateRateLimitsRequest struct {
@@ -128,7 +135,7 @@ type UpdateRateLimitsRequest struct {
 }
 
 type CreateUserRateLimitRequest struct {
-	WorkspaceID string `json:"workspace_id"`
+	ProviderID string `json:"provider_id"`
 	UserEmail   string `json:"user_email"`
 	Daily       int    `json:"daily"`
 	Hourly      int    `json:"hourly"`
@@ -175,19 +182,20 @@ func (api *ProviderManagementAPI) ListWorkspaceProviders(w http.ResponseWriter, 
 	workspaceID := vars["id"]
 	
 	// Defensive programming: validate workspace ID
-	if err := validateWorkspaceID(workspaceID); err != nil {
+	if err := validateProviderID(workspaceID); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 	
+	// Since we no longer have workspaces, just return all providers
+	// The workspaceID parameter is ignored but kept for API compatibility
 	query := `
-		SELECT id, workspace_id, provider_type, enabled, priority, created_at, updated_at
-		FROM workspace_providers
-		WHERE workspace_id = ?
+		SELECT id, provider_id, provider_type, domain, display_name, enabled, priority, created_at, updated_at
+		FROM providers
 		ORDER BY priority ASC, created_at DESC
 	`
 	
-	rows, err := api.db.Query(query, workspaceID)
+	rows, err := api.db.Query(query)
 	if err != nil {
 		log.Printf("Error querying workspace providers: %v", err)
 		http.Error(w, "Failed to fetch providers", http.StatusInternalServerError)
@@ -199,9 +207,10 @@ func (api *ProviderManagementAPI) ListWorkspaceProviders(w http.ResponseWriter, 
 	for rows.Next() {
 		var provider WorkspaceProvider
 		err := rows.Scan(
-			&provider.ID, &provider.WorkspaceID, &provider.Type,
+			&provider.ID, &provider.ProviderID, &provider.Type, &provider.Domain, &provider.DisplayName,
 			&provider.Enabled, &provider.Priority, &provider.CreatedAt, &provider.UpdatedAt,
 		)
+		provider.Name = provider.DisplayName // Populate Name field from DisplayName
 		if err != nil {
 			log.Printf("Error scanning provider row: %v", err)
 			http.Error(w, "Failed to process provider data", http.StatusInternalServerError)
@@ -240,16 +249,17 @@ func (api *ProviderManagementAPI) GetProvider(w http.ResponseWriter, r *http.Req
 	}
 	
 	query := `
-		SELECT id, workspace_id, provider_type, enabled, priority, created_at, updated_at
-		FROM workspace_providers
+		SELECT id, provider_id, provider_type, domain, display_name, enabled, priority, created_at, updated_at
+		FROM providers
 		WHERE id = ?
 	`
 	
 	var provider WorkspaceProvider
 	err = api.db.QueryRow(query, providerID).Scan(
-		&provider.ID, &provider.WorkspaceID, &provider.Type,
+		&provider.ID, &provider.ProviderID, &provider.Type, &provider.Domain, &provider.DisplayName,
 		&provider.Enabled, &provider.Priority, &provider.CreatedAt, &provider.UpdatedAt,
 	)
+	provider.Name = provider.DisplayName // Populate Name field from DisplayName
 	
 	if err == sql.ErrNoRows {
 		http.Error(w, "Provider not found", http.StatusNotFound)
@@ -281,7 +291,7 @@ func (api *ProviderManagementAPI) CreateProvider(w http.ResponseWriter, r *http.
 	}
 	
 	// Defensive programming: comprehensive input validation
-	if err := validateWorkspaceID(workspaceID); err != nil {
+	if err := validateProviderID(workspaceID); err != nil {
 		http.Error(w, fmt.Sprintf("Invalid workspace ID: %v", err), http.StatusBadRequest)
 		return
 	}
@@ -296,7 +306,7 @@ func (api *ProviderManagementAPI) CreateProvider(w http.ResponseWriter, r *http.
 		return
 	}
 	
-	req.WorkspaceID = workspaceID
+	req.ProviderID = workspaceID
 	
 	// Start transaction for atomic operation
 	tx, err := api.db.Begin()
@@ -313,11 +323,11 @@ func (api *ProviderManagementAPI) CreateProvider(w http.ResponseWriter, r *http.
 	
 	// Create workspace provider record
 	query := `
-		INSERT INTO workspace_providers (workspace_id, provider_type, enabled, priority)
-		VALUES (?, ?, ?, ?)
+		INSERT INTO providers (provider_id, provider_type, display_name, domain, enabled, priority)
+		VALUES (?, ?, ?, ?, ?, ?)
 	`
 	
-	result, err := tx.Exec(query, req.WorkspaceID, req.Type, req.Enabled, req.Priority)
+	result, err := tx.Exec(query, req.ProviderID, req.Type, req.Name, req.Domain, req.Enabled, req.Priority)
 	if err != nil {
 		log.Printf("Error creating provider: %v", err)
 		http.Error(w, "Failed to create provider", http.StatusInternalServerError)
@@ -329,6 +339,20 @@ func (api *ProviderManagementAPI) CreateProvider(w http.ResponseWriter, r *http.
 		log.Printf("Error getting provider ID: %v", err)
 		http.Error(w, "Failed to create provider", http.StatusInternalServerError)
 		return
+	}
+	
+	// Update service account JSON if provided (for Gmail providers)
+	if req.ServiceAccountJSON != "" && req.Type == "gmail" {
+		updateCredsQuery := `
+			UPDATE providers 
+			SET service_account_json = ?
+			WHERE id = ?
+		`
+		if _, err := tx.Exec(updateCredsQuery, req.ServiceAccountJSON, providerID); err != nil {
+			log.Printf("Error updating service account credentials: %v", err)
+			http.Error(w, "Failed to update service account credentials", http.StatusInternalServerError)
+			return
+		}
 	}
 	
 	// Create provider-specific configuration
@@ -347,7 +371,10 @@ func (api *ProviderManagementAPI) CreateProvider(w http.ResponseWriter, r *http.
 	// Return created provider
 	provider := WorkspaceProvider{
 		ID:          int(providerID),
-		WorkspaceID: req.WorkspaceID,
+		ProviderID:  req.ProviderID,
+		Name:        req.Name,
+		DisplayName: req.Name,
+		Domain:      req.Domain,
 		Type:        req.Type,
 		Enabled:     req.Enabled,
 		Priority:    req.Priority,
@@ -379,7 +406,7 @@ func (api *ProviderManagementAPI) UpdateProvider(w http.ResponseWriter, r *http.
 	
 	// Get current provider type for config update
 	var providerType string
-	err = api.db.QueryRow("SELECT provider_type FROM workspace_providers WHERE id = ?", providerID).Scan(&providerType)
+	err = api.db.QueryRow("SELECT provider_type FROM providers WHERE id = ?", providerID).Scan(&providerType)
 	if err == sql.ErrNoRows {
 		http.Error(w, "Provider not found", http.StatusNotFound)
 		return
@@ -404,17 +431,46 @@ func (api *ProviderManagementAPI) UpdateProvider(w http.ResponseWriter, r *http.
 	}()
 	
 	// Update workspace provider
-	query := `
-		UPDATE workspace_providers 
-		SET enabled = ?, priority = ?, updated_at = NOW()
-		WHERE id = ?
-	`
+	queryParts := []string{"enabled = ?", "priority = ?", "updated_at = NOW()"}
+	queryArgs := []interface{}{req.Enabled, req.Priority}
 	
-	result, err := tx.Exec(query, req.Enabled, req.Priority, providerID)
+	if req.Name != "" {
+		queryParts = append(queryParts, "display_name = ?")
+		queryArgs = append(queryArgs, req.Name)
+	}
+	
+	if req.Domain != "" {
+		queryParts = append(queryParts, "domain = ?")
+		queryArgs = append(queryArgs, req.Domain)
+	}
+	
+	queryArgs = append(queryArgs, providerID)
+	
+	query := fmt.Sprintf(`
+		UPDATE providers 
+		SET %s
+		WHERE id = ?
+	`, strings.Join(queryParts, ", "))
+	
+	result, err := tx.Exec(query, queryArgs...)
 	if err != nil {
 		log.Printf("Error updating provider: %v", err)
 		http.Error(w, "Failed to update provider", http.StatusInternalServerError)
 		return
+	}
+	
+	// Update service account JSON if provided (for Gmail providers)
+	if req.ServiceAccountJSON != "" && providerType == "gmail" {
+		updateCredsQuery := `
+			UPDATE providers 
+			SET service_account_json = ?
+			WHERE id = ?
+		`
+		if _, err := tx.Exec(updateCredsQuery, req.ServiceAccountJSON, providerID); err != nil {
+			log.Printf("Error updating service account credentials: %v", err)
+			http.Error(w, "Failed to update service account credentials", http.StatusInternalServerError)
+			return
+		}
 	}
 	
 	rowsAffected, _ := result.RowsAffected()
@@ -473,7 +529,6 @@ func (api *ProviderManagementAPI) DeleteProvider(w http.ResponseWriter, r *http.
 		}
 	}()
 	
-	// Delete provider-specific configurations (cascading delete should handle this)
 	// Delete header rewrite rules
 	_, err = tx.Exec("DELETE FROM provider_header_rewrite_rules WHERE provider_id = ?", providerID)
 	if err != nil {
@@ -482,24 +537,10 @@ func (api *ProviderManagementAPI) DeleteProvider(w http.ResponseWriter, r *http.
 		return
 	}
 	
-	// Delete provider configuration records
-	_, err = tx.Exec("DELETE FROM gmail_provider_configs WHERE provider_id = ?", providerID)
-	if err != nil {
-		log.Printf("Error deleting Gmail config: %v", err)
-	}
-	
-	_, err = tx.Exec("DELETE FROM mailgun_provider_configs WHERE provider_id = ?", providerID)
-	if err != nil {
-		log.Printf("Error deleting Mailgun config: %v", err)
-	}
-	
-	_, err = tx.Exec("DELETE FROM mandrill_provider_configs WHERE provider_id = ?", providerID)
-	if err != nil {
-		log.Printf("Error deleting Mandrill config: %v", err)
-	}
+	// Provider config is stored in the providers table itself, so no need to delete from separate tables
 	
 	// Delete main provider record
-	result, err := tx.Exec("DELETE FROM workspace_providers WHERE id = ?", providerID)
+	result, err := tx.Exec("DELETE FROM providers WHERE id = ?", providerID)
 	if err != nil {
 		log.Printf("Error deleting provider: %v", err)
 		http.Error(w, "Failed to delete provider", http.StatusInternalServerError)
@@ -532,15 +573,15 @@ func (api *ProviderManagementAPI) GetRateLimits(w http.ResponseWriter, r *http.R
 	}
 	
 	query := `
-		SELECT workspace_id, workspace_daily, per_user_daily, burst_limit, created_at, updated_at
-		FROM workspace_rate_limits
-		WHERE workspace_id = ?
+		SELECT provider_id, workspace_daily, per_user_daily, burst_limit, created_at, updated_at
+		FROM provider_rate_limits
+		WHERE provider_id = ?
 	`
 	
 	var rateLimit WorkspaceRateLimit
 	var burstLimit sql.NullInt64
 	err := api.db.QueryRow(query, workspaceID).Scan(
-		&rateLimit.WorkspaceID, &rateLimit.Daily, &rateLimit.PerUserDaily,
+		&rateLimit.ProviderID, &rateLimit.Daily, &rateLimit.PerUserDaily,
 		&burstLimit, &rateLimit.CreatedAt, &rateLimit.UpdatedAt,
 	)
 	// Set hourly to 0 since we don't have those columns
@@ -550,7 +591,7 @@ func (api *ProviderManagementAPI) GetRateLimits(w http.ResponseWriter, r *http.R
 	if err == sql.ErrNoRows {
 		// Return default values if no rate limits configured
 		rateLimit = WorkspaceRateLimit{
-			WorkspaceID:   workspaceID,
+			ProviderID:   workspaceID,
 			Daily:         1000,
 			Hourly:        100,
 			PerUserDaily:  100,
@@ -605,7 +646,7 @@ func (api *ProviderManagementAPI) UpdateRateLimits(w http.ResponseWriter, r *htt
 	}
 	
 	query := `
-		INSERT INTO workspace_rate_limits (workspace_id, daily, hourly, per_user_daily, per_user_hourly)
+		INSERT INTO provider_rate_limits (provider_id, daily, hourly, per_user_daily, per_user_hourly)
 		VALUES (?, ?, ?, ?, ?)
 		ON DUPLICATE KEY UPDATE
 		daily = VALUES(daily),
@@ -624,7 +665,7 @@ func (api *ProviderManagementAPI) UpdateRateLimits(w http.ResponseWriter, r *htt
 	
 	// Return updated rate limits
 	rateLimit := WorkspaceRateLimit{
-		WorkspaceID:   workspaceID,
+		ProviderID:   workspaceID,
 		Daily:         req.Daily,
 		Hourly:        req.Hourly,
 		PerUserDaily:  req.PerUserDaily,
@@ -647,9 +688,9 @@ func (api *ProviderManagementAPI) ListUserRateLimits(w http.ResponseWriter, r *h
 	}
 	
 	query := `
-		SELECT id, workspace_id, email_address, daily_limit, created_at, updated_at
-		FROM workspace_user_rate_limits
-		WHERE workspace_id = ?
+		SELECT id, provider_id, email_address, daily_limit, created_at, updated_at
+		FROM provider_user_rate_limits
+		WHERE provider_id = ?
 		ORDER BY email_address ASC
 	`
 	
@@ -665,7 +706,7 @@ func (api *ProviderManagementAPI) ListUserRateLimits(w http.ResponseWriter, r *h
 	for rows.Next() {
 		var userRateLimit WorkspaceUserRateLimit
 		err := rows.Scan(
-			&userRateLimit.ID, &userRateLimit.WorkspaceID, &userRateLimit.UserEmail,
+			&userRateLimit.ID, &userRateLimit.ProviderID, &userRateLimit.UserEmail,
 			&userRateLimit.Daily, &userRateLimit.CreatedAt, &userRateLimit.UpdatedAt,
 		)
 		userRateLimit.Hourly = 0 // We don't have hourly in the table
@@ -713,14 +754,14 @@ func (api *ProviderManagementAPI) CreateUserRateLimit(w http.ResponseWriter, r *
 		return
 	}
 	
-	req.WorkspaceID = workspaceID
+	req.ProviderID = workspaceID
 	
 	query := `
-		INSERT INTO workspace_user_rate_limits (workspace_id, user_email, daily, hourly)
+		INSERT INTO provider_user_rate_limits (provider_id, user_email, daily, hourly)
 		VALUES (?, ?, ?, ?)
 	`
 	
-	result, err := api.db.Exec(query, req.WorkspaceID, req.UserEmail, req.Daily, req.Hourly)
+	result, err := api.db.Exec(query, req.ProviderID, req.UserEmail, req.Daily, req.Hourly)
 	if err != nil {
 		log.Printf("Error creating user rate limit: %v", err)
 		http.Error(w, "Failed to create user rate limit", http.StatusInternalServerError)
@@ -736,7 +777,7 @@ func (api *ProviderManagementAPI) CreateUserRateLimit(w http.ResponseWriter, r *
 	
 	userRateLimit := WorkspaceUserRateLimit{
 		ID:          int(userRateLimitID),
-		WorkspaceID: req.WorkspaceID,
+		ProviderID: req.ProviderID,
 		UserEmail:   req.UserEmail,
 		Daily:       req.Daily,
 		Hourly:      req.Hourly,
@@ -759,7 +800,7 @@ func (api *ProviderManagementAPI) DeleteUserRateLimit(w http.ResponseWriter, r *
 		return
 	}
 	
-	query := `DELETE FROM workspace_user_rate_limits WHERE id = ?`
+	query := `DELETE FROM provider_user_rate_limits WHERE id = ?`
 	result, err := api.db.Exec(query, userRateLimitID)
 	if err != nil {
 		log.Printf("Error deleting user rate limit: %v", err)
@@ -944,26 +985,15 @@ func (api *ProviderManagementAPI) loadProviderConfig(providerID int, providerTyp
 
 func (api *ProviderManagementAPI) loadGmailConfig(providerID int) (*GmailProviderConfig, error) {
 	query := `
-		SELECT provider_id, service_account_file, service_account_env, default_sender, impersonate_user, scopes, created_at, updated_at
-		FROM gmail_provider_configs
-		WHERE provider_id = ?
+		SELECT provider_config, service_account_json
+		FROM providers
+		WHERE id = ?
 	`
 	
-	var config GmailProviderConfig
-	var scopesJSON sql.NullString
-	var serviceAccountFile sql.NullString
-	var serviceAccountEnv sql.NullString
-	var impersonateUser sql.NullString
+	var providerConfigJSON sql.NullString
+	var serviceAccountJSON sql.NullString
 	
-	err := api.db.QueryRow(query, providerID).Scan(
-		&config.ProviderID, &serviceAccountFile, &serviceAccountEnv, &config.DefaultSender,
-		&impersonateUser, &scopesJSON, &config.CreatedAt, &config.UpdatedAt,
-	)
-	
-	// Use impersonate_user as delegated_user for compatibility
-	if impersonateUser.Valid {
-		config.DelegatedUser = &impersonateUser.String
-	}
+	err := api.db.QueryRow(query, providerID).Scan(&providerConfigJSON, &serviceAccountJSON)
 	
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -972,19 +1002,36 @@ func (api *ProviderManagementAPI) loadGmailConfig(providerID int) (*GmailProvide
 		return nil, err
 	}
 	
-	// Handle nullable fields
-	if serviceAccountFile.Valid {
-		config.ServiceAccountFile = serviceAccountFile.String
-	}
-	if serviceAccountEnv.Valid {
-		config.ServiceAccountEnv = serviceAccountEnv.String
+	config := &GmailProviderConfig{
+		ProviderID: providerID,
 	}
 	
-	if scopesJSON.Valid {
-		json.Unmarshal([]byte(scopesJSON.String), &config.Scopes)
+	// Check if we have service account JSON in the database
+	if serviceAccountJSON.Valid && serviceAccountJSON.String != "" && serviceAccountJSON.String != "null" {
+		config.HasUploadedCredentials = true
 	}
 	
-	return &config, nil
+	// Parse the provider_config JSON
+	if providerConfigJSON.Valid && providerConfigJSON.String != "" {
+		var jsonConfig map[string]interface{}
+		if err := json.Unmarshal([]byte(providerConfigJSON.String), &jsonConfig); err == nil {
+			if defaultSender, ok := jsonConfig["default_sender"].(string); ok {
+				config.DefaultSender = defaultSender
+			}
+			if serviceAccountFile, ok := jsonConfig["service_account_file"].(string); ok {
+				config.ServiceAccountFile = serviceAccountFile
+			}
+		}
+	}
+	
+	// Check if service account JSON is stored in database
+	if serviceAccountJSON.Valid && serviceAccountJSON.String != "" {
+		config.HasUploadedCredentials = true
+		// Don't expose the actual credentials, just indicate they exist
+		config.ServiceAccountFile = "Stored in database"
+	}
+	
+	return config, nil
 }
 
 func (api *ProviderManagementAPI) loadMailgunConfig(providerID int) (*MailgunProviderConfig, error) {
@@ -1077,81 +1124,53 @@ func (api *ProviderManagementAPI) createProviderConfig(tx *sql.Tx, providerID in
 }
 
 func (api *ProviderManagementAPI) createGmailConfig(tx *sql.Tx, providerID int, config interface{}) error {
-	configMap, ok := config.(map[string]interface{})
-	if !ok {
-		return fmt.Errorf("invalid Gmail configuration format")
-	}
-	
-	serviceAccountFile, _ := configMap["service_account_file"].(string)
-	defaultSender, _ := configMap["default_sender"].(string)
-	delegatedUser, _ := configMap["delegated_user"].(string)
-	scopes, _ := configMap["scopes"].([]interface{})
-	
-	scopesJSON := "[]"
-	if scopes != nil {
-		if scopesBytes, err := json.Marshal(scopes); err == nil {
-			scopesJSON = string(scopesBytes)
-		}
+	// Convert config to JSON for storage in provider_config column
+	configJSON, err := json.Marshal(config)
+	if err != nil {
+		return fmt.Errorf("failed to marshal Gmail config: %v", err)
 	}
 	
 	query := `
-		INSERT INTO gmail_provider_configs (provider_id, service_account_file, default_sender, delegated_user, scopes)
-		VALUES (?, ?, ?, ?, ?)
+		UPDATE providers 
+		SET provider_config = ?
+		WHERE id = ?
 	`
 	
-	var delegatedUserPtr *string
-	if delegatedUser != "" {
-		delegatedUserPtr = &delegatedUser
-	}
-	
-	_, err := tx.Exec(query, providerID, serviceAccountFile, defaultSender, delegatedUserPtr, scopesJSON)
+	_, err = tx.Exec(query, configJSON, providerID)
 	return err
 }
 
 func (api *ProviderManagementAPI) createMailgunConfig(tx *sql.Tx, providerID int, config interface{}) error {
-	configMap, ok := config.(map[string]interface{})
-	if !ok {
-		return fmt.Errorf("invalid Mailgun configuration format")
-	}
-	
-	apiKey, _ := configMap["api_key"].(string)
-	domain, _ := configMap["domain"].(string)
-	baseURL, _ := configMap["base_url"].(string)
-	trackOpens, _ := configMap["track_opens"].(bool)
-	trackClicks, _ := configMap["track_clicks"].(bool)
-	
-	if baseURL == "" {
-		baseURL = "https://api.mailgun.net/v3"
+	// Convert config to JSON for storage in provider_config column
+	configJSON, err := json.Marshal(config)
+	if err != nil {
+		return fmt.Errorf("failed to marshal Mailgun config: %v", err)
 	}
 	
 	query := `
-		INSERT INTO mailgun_provider_configs (provider_id, api_key, domain, base_url, track_opens, track_clicks)
-		VALUES (?, ?, ?, ?, ?, ?)
+		UPDATE providers 
+		SET provider_config = ?
+		WHERE id = ?
 	`
 	
-	_, err := tx.Exec(query, providerID, apiKey, domain, baseURL, trackOpens, trackClicks)
+	_, err = tx.Exec(query, configJSON, providerID)
 	return err
 }
 
 func (api *ProviderManagementAPI) createMandrillConfig(tx *sql.Tx, providerID int, config interface{}) error {
-	configMap, ok := config.(map[string]interface{})
-	if !ok {
-		return fmt.Errorf("invalid Mandrill configuration format")
-	}
-	
-	apiKey, _ := configMap["api_key"].(string)
-	baseURL, _ := configMap["base_url"].(string)
-	
-	if baseURL == "" {
-		baseURL = "https://mandrillapp.com/api/1.0"
+	// Convert config to JSON for storage in provider_config column
+	configJSON, err := json.Marshal(config)
+	if err != nil {
+		return fmt.Errorf("failed to marshal Mandrill config: %v", err)
 	}
 	
 	query := `
-		INSERT INTO mandrill_provider_configs (provider_id, api_key, base_url)
-		VALUES (?, ?, ?)
+		UPDATE providers 
+		SET provider_config = ?
+		WHERE id = ?
 	`
 	
-	_, err := tx.Exec(query, providerID, apiKey, baseURL)
+	_, err = tx.Exec(query, configJSON, providerID)
 	return err
 }
 
@@ -1169,91 +1188,69 @@ func (api *ProviderManagementAPI) updateProviderConfig(tx *sql.Tx, providerID in
 }
 
 func (api *ProviderManagementAPI) updateGmailConfig(tx *sql.Tx, providerID int, config interface{}) error {
-	configMap, ok := config.(map[string]interface{})
-	if !ok {
-		return fmt.Errorf("invalid Gmail configuration format")
-	}
-	
-	serviceAccountFile, _ := configMap["service_account_file"].(string)
-	defaultSender, _ := configMap["default_sender"].(string)
-	delegatedUser, _ := configMap["delegated_user"].(string)
-	scopes, _ := configMap["scopes"].([]interface{})
-	
-	scopesJSON := "[]"
-	if scopes != nil {
-		if scopesBytes, err := json.Marshal(scopes); err == nil {
-			scopesJSON = string(scopesBytes)
-		}
+	// Convert config to JSON for storage in provider_config column
+	configJSON, err := json.Marshal(config)
+	if err != nil {
+		return fmt.Errorf("failed to marshal Gmail config: %v", err)
 	}
 	
 	query := `
-		UPDATE gmail_provider_configs 
-		SET service_account_file = ?, default_sender = ?, delegated_user = ?, scopes = ?, updated_at = NOW()
-		WHERE provider_id = ?
+		UPDATE providers 
+		SET provider_config = ?, updated_at = NOW()
+		WHERE id = ?
 	`
 	
-	var delegatedUserPtr *string
-	if delegatedUser != "" {
-		delegatedUserPtr = &delegatedUser
-	}
-	
-	_, err := tx.Exec(query, serviceAccountFile, defaultSender, delegatedUserPtr, scopesJSON, providerID)
+	_, err = tx.Exec(query, configJSON, providerID)
 	return err
 }
 
 func (api *ProviderManagementAPI) updateMailgunConfig(tx *sql.Tx, providerID int, config interface{}) error {
-	configMap, ok := config.(map[string]interface{})
-	if !ok {
-		return fmt.Errorf("invalid Mailgun configuration format")
+	// Convert config to JSON for storage in provider_config column
+	configJSON, err := json.Marshal(config)
+	if err != nil {
+		return fmt.Errorf("failed to marshal Mailgun config: %v", err)
 	}
 	
-	apiKey, _ := configMap["api_key"].(string)
-	domain, _ := configMap["domain"].(string)
-	baseURL, _ := configMap["base_url"].(string)
-	trackOpens, _ := configMap["track_opens"].(bool)
-	trackClicks, _ := configMap["track_clicks"].(bool)
-	
 	query := `
-		UPDATE mailgun_provider_configs 
-		SET api_key = ?, domain = ?, base_url = ?, track_opens = ?, track_clicks = ?, updated_at = NOW()
-		WHERE provider_id = ?
+		UPDATE providers 
+		SET provider_config = ?, updated_at = NOW()
+		WHERE id = ?
 	`
 	
-	_, err := tx.Exec(query, apiKey, domain, baseURL, trackOpens, trackClicks, providerID)
+	_, err = tx.Exec(query, configJSON, providerID)
 	return err
 }
 
 func (api *ProviderManagementAPI) updateMandrillConfig(tx *sql.Tx, providerID int, config interface{}) error {
-	configMap, ok := config.(map[string]interface{})
-	if !ok {
-		return fmt.Errorf("invalid Mandrill configuration format")
+	// Convert config to JSON for storage in provider_config column
+	configJSON, err := json.Marshal(config)
+	if err != nil {
+		return fmt.Errorf("failed to marshal Mandrill config: %v", err)
 	}
 	
-	apiKey, _ := configMap["api_key"].(string)
-	baseURL, _ := configMap["base_url"].(string)
-	
 	query := `
-		UPDATE mandrill_provider_configs 
-		SET api_key = ?, base_url = ?, updated_at = NOW()
-		WHERE provider_id = ?
+		UPDATE providers 
+		SET provider_config = ?, updated_at = NOW()
+		WHERE id = ?
 	`
 	
-	_, err := tx.Exec(query, apiKey, baseURL, providerID)
+	_, err = tx.Exec(query, configJSON, providerID)
 	return err
 }
 
 func (api *ProviderManagementAPI) getProviderByID(providerID int) (*WorkspaceProvider, error) {
 	query := `
-		SELECT id, workspace_id, provider_type, enabled, priority, created_at, updated_at
-		FROM workspace_providers
+		SELECT id, provider_id, provider_type, domain, display_name, enabled, priority, created_at, updated_at
+		FROM providers
 		WHERE id = ?
 	`
 	
 	var provider WorkspaceProvider
 	err := api.db.QueryRow(query, providerID).Scan(
-		&provider.ID, &provider.WorkspaceID, &provider.Type,
+		&provider.ID, &provider.ProviderID, &provider.Type, &provider.Domain, &provider.DisplayName,
 		&provider.Enabled, &provider.Priority, &provider.CreatedAt, &provider.UpdatedAt,
 	)
+	provider.Name = provider.DisplayName // Populate Name field from DisplayName
 	
 	if err != nil {
 		return nil, err
@@ -1269,8 +1266,8 @@ func (api *ProviderManagementAPI) getProviderByID(providerID int) (*WorkspacePro
 
 // Input validation helper functions for defensive programming
 
-// validateWorkspaceID validates a workspace ID
-func validateWorkspaceID(workspaceID string) error {
+// validateProviderID validates a workspace ID
+func validateProviderID(workspaceID string) error {
 	if workspaceID == "" {
 		return fmt.Errorf("workspace ID is required")
 	}

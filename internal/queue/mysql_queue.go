@@ -51,7 +51,7 @@ func (q *MySQLQueue) Enqueue(message *models.Message) error {
 		INSERT INTO messages (
 			id, from_email, to_emails, cc_emails, bcc_emails, 
 			subject, html_body, text_body, headers, attachments, 
-			metadata, campaign_id, notification_id, user_id, provider_id, status, queued_at
+			metadata, invitation_id, email_type, invitation_dispatch_id, provider_id, status, queued_at
 		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`
 
@@ -67,9 +67,9 @@ func (q *MySQLQueue) Enqueue(message *models.Message) error {
 		string(headers),
 		string(attachments),
 		string(metadata),
-		message.CampaignID,
-		message.NotificationID,
-		message.UserID,
+		message.InvitationID,
+		message.EmailType,
+		message.InvitationDispatchID,
 		message.ProviderID,
 		message.Status,
 		message.QueuedAt,
@@ -88,7 +88,7 @@ func (q *MySQLQueue) Dequeue(batchSize int) ([]*models.Message, error) {
 	query := `
 		SELECT id, from_email, to_emails, cc_emails, bcc_emails,
 			subject, html_body, text_body, headers, attachments,
-			metadata, campaign_id, notification_id, user_id, provider_id, status, queued_at, processed_at, error, retry_count
+			metadata, invitation_id, email_type, invitation_dispatch_id, provider_id, status, queued_at, processed_at, error, retry_count
 		FROM messages
 		WHERE status = 'queued' OR (status = 'failed' AND retry_count < 3)
 		ORDER BY queued_at ASC
@@ -124,9 +124,9 @@ func (q *MySQLQueue) Dequeue(batchSize int) ([]*models.Message, error) {
 			&headers,
 			&attachments,
 			&metadata,
-			&msg.CampaignID,
-			&msg.NotificationID,
-			&msg.UserID,
+			&msg.InvitationID,
+			&msg.EmailType,
+			&msg.InvitationDispatchID,
 			&msg.ProviderID,
 			&msg.Status,
 			&msg.QueuedAt,
@@ -261,7 +261,7 @@ func (q *MySQLQueue) Get(id string) (*models.Message, error) {
 	query := `
 		SELECT id, from_email, to_emails, cc_emails, bcc_emails,
 			subject, html_body, text_body, headers, attachments,
-			metadata, campaign_id, notification_id, user_id, provider_id, status, queued_at, processed_at, error
+			metadata, invitation_id, email_type, invitation_dispatch_id, provider_id, status, queued_at, processed_at, error
 		FROM messages
 		WHERE id = ?
 	`
@@ -283,9 +283,9 @@ func (q *MySQLQueue) Get(id string) (*models.Message, error) {
 		&headers,
 		&attachments,
 		&metadata,
-		&msg.CampaignID,
-		&msg.NotificationID,
-		&msg.UserID,
+		&msg.InvitationID,
+		&msg.EmailType,
+		&msg.InvitationDispatchID,
 		&msg.ProviderID,
 		&msg.Status,
 		&msg.QueuedAt,

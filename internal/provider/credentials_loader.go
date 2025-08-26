@@ -93,8 +93,8 @@ func (cl *CredentialsLoader) loadFromDatabase(workspaceID string) ([]byte, error
 
 	query := `
 		SELECT service_account_json 
-		FROM workspaces 
-		WHERE id = ? AND provider_type = 'gmail' 
+		FROM providers 
+		WHERE provider_id = ? AND provider_type = 'gmail' 
 		  AND service_account_json IS NOT NULL
 	`
 

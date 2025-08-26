@@ -17,11 +17,11 @@ type Message struct {
 	Attachments []Attachment           `json:"attachments,omitempty"`
 	Metadata    map[string]interface{} `json:"metadata,omitempty"`
 	
-	// Campaign and user tracking
-	CampaignID     string `json:"campaign_id,omitempty"`
-	NotificationID string `json:"notification_id,omitempty"`
-	UserID         string `json:"user_id,omitempty"`
-	ProviderID     string `json:"provider_id,omitempty"`
+	// Invitation tracking
+	InvitationID         string `json:"invitation_id,omitempty"`
+	EmailType            string `json:"email_type,omitempty"`
+	InvitationDispatchID string `json:"invitation_dispatch_id,omitempty"`
+	ProviderID           string `json:"provider_id,omitempty"`
 	
 	Status      MessageStatus          `json:"status"`
 	QueuedAt    time.Time              `json:"queued_at"`

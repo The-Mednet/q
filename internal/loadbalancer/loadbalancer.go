@@ -160,7 +160,7 @@ func (lb *LoadBalancerImpl) SelectWorkspace(ctx context.Context, senderEmail str
 	// Record the selection for analytics (TODO: implement analytics storage)
 	_ = &LoadBalancingSelection{
 		PoolID:        selectedPool.ID,
-		WorkspaceID:   selected.Workspace.WorkspaceID,
+		ProviderID:   selected.Workspace.ProviderID,
 		SenderEmail:   senderEmail,
 		SelectedAt:    time.Now(),
 		Success:       true, // Assume success for now
@@ -168,12 +168,12 @@ func (lb *LoadBalancerImpl) SelectWorkspace(ctx context.Context, senderEmail str
 		SelectionReason: selected.SelectionReason,
 	}
 
-	if err := lb.RecordSelection(ctx, selectedPool.ID, selected.Workspace.WorkspaceID, senderEmail, true, selected.Score); err != nil {
+	if err := lb.RecordSelection(ctx, selectedPool.ID, selected.Workspace.ProviderID, senderEmail, true, selected.Score); err != nil {
 		log.Printf("Warning: Failed to record selection: %v", err)
 	}
 
 	log.Printf("Selected workspace %s for %s from pool %s (score=%.4f, capacity=%.2f%%)",
-		selected.Workspace.WorkspaceID, senderEmail, selectedPool.ID, 
+		selected.Workspace.ProviderID, senderEmail, selectedPool.ID, 
 		selected.Score, selected.Capacity.RemainingPercentage*100)
 
 	return selected.Config, nil
@@ -199,7 +199,7 @@ func (lb *LoadBalancerImpl) buildCandidates(ctx context.Context, pool *LoadBalan
 
 	for _, poolWorkspace := range pool.Workspaces {
 		// Defensive check for empty workspace ID (since PoolWorkspace is a struct, not a pointer)
-		if poolWorkspace.WorkspaceID == "" {
+		if poolWorkspace.ProviderID == "" {
 			log.Printf("Warning: Skipping workspace with empty ID in pool %s", pool.ID)
 			continue
 		}
@@ -208,31 +208,31 @@ func (lb *LoadBalancerImpl) buildCandidates(ctx context.Context, pool *LoadBalan
 		}
 
 		// Get workspace configuration
-		workspaceConfig, err := lb.workspaceProvider.GetWorkspaceByID(poolWorkspace.WorkspaceID)
+		workspaceConfig, err := lb.workspaceProvider.GetWorkspaceByID(poolWorkspace.ProviderID)
 		if err != nil {
-			log.Printf("Warning: Failed to get workspace %s: %v", poolWorkspace.WorkspaceID, err)
+			log.Printf("Warning: Failed to get workspace %s: %v", poolWorkspace.ProviderID, err)
 			continue
 		}
 		
 		// Defensive check for nil workspace config
 		if workspaceConfig == nil {
-			log.Printf("Warning: Workspace config is nil for workspace %s", poolWorkspace.WorkspaceID)
+			log.Printf("Warning: Workspace config is nil for workspace %s", poolWorkspace.ProviderID)
 			continue
 		}
 
 		// Get capacity information
-		capacity, err := lb.capacityTracker.GetWorkspaceCapacity(poolWorkspace.WorkspaceID, senderEmail)
+		capacity, err := lb.capacityTracker.GetWorkspaceCapacity(poolWorkspace.ProviderID, senderEmail)
 		if err != nil {
-			log.Printf("Warning: Failed to get capacity for workspace %s: %v", poolWorkspace.WorkspaceID, err)
+			log.Printf("Warning: Failed to get capacity for workspace %s: %v", poolWorkspace.ProviderID, err)
 			continue
 		}
 
 		// Get health information
 		healthScore := 1.0 // Default to healthy
 		if lb.healthChecker != nil {
-			healthy, healthErr := lb.healthChecker.IsWorkspaceHealthy(ctx, poolWorkspace.WorkspaceID)
+			healthy, healthErr := lb.healthChecker.IsWorkspaceHealthy(ctx, poolWorkspace.ProviderID)
 			if healthErr != nil {
-				log.Printf("Warning: Health check failed for workspace %s: %v", poolWorkspace.WorkspaceID, healthErr)
+				log.Printf("Warning: Health check failed for workspace %s: %v", poolWorkspace.ProviderID, healthErr)
 				healthScore = 0.5 // Partial health score on error
 			} else if !healthy {
 				healthScore = 0.0 // Unhealthy
@@ -257,7 +257,7 @@ func (lb *LoadBalancerImpl) buildCandidates(ctx context.Context, pool *LoadBalan
 func (lb *LoadBalancerImpl) RecordSelection(ctx context.Context, poolID, workspaceID, senderEmail string, success bool, capacityScore float64) error {
 	selection := &LoadBalancingSelection{
 		PoolID:        poolID,
-		WorkspaceID:   workspaceID,
+		ProviderID:   workspaceID,
 		SenderEmail:   senderEmail,
 		SelectedAt:    time.Now(),
 		Success:       success,
@@ -302,7 +302,7 @@ func (lb *LoadBalancerImpl) GetPoolStatus(poolID string) (*PoolStatus, error) {
 	ctx := context.Background()
 	for _, ws := range pool.Workspaces {
 		workspaceStatus := WorkspaceStatus{
-			WorkspaceID: ws.WorkspaceID,
+			ProviderID: ws.ProviderID,
 			Weight:      ws.Weight,
 			Enabled:     ws.Enabled,
 			Healthy:     true, // Default assumption
@@ -310,7 +310,7 @@ func (lb *LoadBalancerImpl) GetPoolStatus(poolID string) (*PoolStatus, error) {
 
 		// Check health if workspace is enabled
 		if ws.Enabled && lb.healthChecker != nil {
-			healthy, healthErr := lb.healthChecker.IsWorkspaceHealthy(ctx, ws.WorkspaceID)
+			healthy, healthErr := lb.healthChecker.IsWorkspaceHealthy(ctx, ws.ProviderID)
 			workspaceStatus.Healthy = healthy
 			if healthErr != nil {
 				errStr := healthErr.Error()
@@ -319,7 +319,7 @@ func (lb *LoadBalancerImpl) GetPoolStatus(poolID string) (*PoolStatus, error) {
 		}
 
 		// Get capacity information (using a dummy sender email for status)
-		capacity, capacityErr := lb.capacityTracker.GetWorkspaceCapacity(ws.WorkspaceID, "status@example.com")
+		capacity, capacityErr := lb.capacityTracker.GetWorkspaceCapacity(ws.ProviderID, "status@example.com")
 		if capacityErr == nil {
 			workspaceStatus.CapacityInfo = capacity
 		}
@@ -397,12 +397,12 @@ func (lb *LoadBalancerImpl) SelectFromDefaultPool(ctx context.Context) (*config.
 	}
 	
 	// Get the actual workspace configuration
-	workspace, err := lb.workspaceProvider.GetWorkspaceByID(selected.Workspace.WorkspaceID)
+	workspace, err := lb.workspaceProvider.GetWorkspaceByID(selected.Workspace.ProviderID)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get workspace %s: %w", selected.Workspace.WorkspaceID, err)
+		return nil, fmt.Errorf("failed to get workspace %s: %w", selected.Workspace.ProviderID, err)
 	}
 	
-	log.Printf("Selected workspace %s from default pool %s", selected.Workspace.WorkspaceID, defaultPoolID)
+	log.Printf("Selected workspace %s from default pool %s", selected.Workspace.ProviderID, defaultPoolID)
 	return workspace, nil
 }
 
@@ -637,7 +637,7 @@ func (shc *SimpleHealthChecker) GetWorkspaceHealth(ctx context.Context, workspac
 	healthy, err := shc.IsWorkspaceHealthy(ctx, workspaceID)
 	
 	info := &WorkspaceHealthInfo{
-		WorkspaceID:   workspaceID,
+		ProviderID:   workspaceID,
 		Healthy:       healthy,
 		LastCheckTime: time.Now(),
 		ProviderStatus: "unknown",

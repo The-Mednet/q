@@ -49,7 +49,7 @@ type RateLimitsResponse struct {
 }
 
 type WorkspaceLimit struct {
-	WorkspaceID string `json:"workspace_id"`
+	ProviderID string `json:"provider_id"`
 	Used        int64  `json:"used"`
 	Limit       int64  `json:"limit"`
 	ResetAt     string `json:"reset_at"`
@@ -188,8 +188,8 @@ func (api *MetricsAPI) GetRateLimits(w http.ResponseWriter, r *http.Request) {
 			w.id,
 			w.rate_limit_workspace_daily,
 			COALESCE(SUM(r.message_count), 0) as used
-		FROM workspaces w
-		LEFT JOIN rate_limit_usage r ON w.id = r.workspace_id 
+		FROM providers w
+		LEFT JOIN rate_limit_usage r ON w.id = r.provider_id 
 			AND r.date_bucket = ? AND r.user_email IS NULL
 		WHERE w.enabled = true
 		GROUP BY w.id, w.rate_limit_workspace_daily
@@ -199,7 +199,7 @@ func (api *MetricsAPI) GetRateLimits(w http.ResponseWriter, r *http.Request) {
 		defer rows.Close()
 		for rows.Next() {
 			var limit WorkspaceLimit
-			if err := rows.Scan(&limit.WorkspaceID, &limit.Limit, &limit.Used); err == nil {
+			if err := rows.Scan(&limit.ProviderID, &limit.Limit, &limit.Used); err == nil {
 				limit.ResetAt = time.Now().Add(24 * time.Hour).Format(time.RFC3339)
 				response.WorkspaceLimits = append(response.WorkspaceLimits, limit)
 			}
@@ -213,7 +213,7 @@ func (api *MetricsAPI) GetRateLimits(w http.ResponseWriter, r *http.Request) {
 			w.rate_limit_per_user_daily,
 			COALESCE(SUM(r.message_count), 0) as used
 		FROM rate_limit_usage r
-		JOIN workspaces w ON r.workspace_id = w.id
+		JOIN workspaces w ON r.provider_id = w.id
 		WHERE r.date_bucket = ? AND r.user_email IS NOT NULL
 		GROUP BY r.user_email, w.rate_limit_per_user_daily
 		LIMIT 50
@@ -250,8 +250,8 @@ func (api *MetricsAPI) GetHealth(w http.ResponseWriter, r *http.Request) {
 	// Check provider health
 	providerQuery := `
 		SELECT w.id, w.display_name, ph.healthy, ph.error_message
-		FROM workspaces w
-		LEFT JOIN provider_health ph ON w.id = ph.workspace_id
+		FROM providers w
+		LEFT JOIN provider_health ph ON w.id = ph.provider_id
 		WHERE w.enabled = true
 	`
 	rows, err := api.db.Query(providerQuery)

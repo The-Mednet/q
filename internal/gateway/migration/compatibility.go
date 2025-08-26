@@ -71,7 +71,7 @@ func (lgw *LegacyGmailWrapper) SendMessage(ctx context.Context, msg *models.Mess
 		GatewayType: gateway.GatewayTypeGoogleWorkspace,
 		SendTime:    sendDuration,
 		Metadata: map[string]interface{}{
-			"workspace_id": lgw.workspaceID,
+			"provider_id": lgw.workspaceID,
 			"domain":       lgw.domain,
 		},
 	}

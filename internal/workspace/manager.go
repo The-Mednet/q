@@ -116,11 +116,11 @@ func (m *Manager) GetAllWorkspaces() map[string]*config.WorkspaceConfig {
 	return result
 }
 
-// GetWorkspaceIDs returns all workspace IDs
-func (m *Manager) GetWorkspaceIDs() []string {
+// GetProviderIDs returns all workspace IDs
+func (m *Manager) GetProviderIDs() []string {
 	// Defensive programming: handle nil manager
 	if m == nil {
-		log.Printf("Warning: GetWorkspaceIDs called on nil manager")
+		log.Printf("Warning: GetProviderIDs called on nil manager")
 		return []string{}
 	}
 
@@ -178,6 +178,7 @@ func (m *Manager) GetWorkspaceForSenderWithRewrite(senderEmail string) (*Workspa
 	domain := senderEmail[atIndex+1:]
 
 	// First, try direct domain matching
+	log.Printf("DEBUG: Looking for direct match for domain: %s", domain)
 	workspace, err := m.GetWorkspaceByDomain(domain)
 	if err == nil && workspace != nil {
 		log.Printf("Direct domain match found: workspace %s for domain %s", workspace.ID, domain)

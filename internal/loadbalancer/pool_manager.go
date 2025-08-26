@@ -141,10 +141,10 @@ func (pm *PoolManager) loadPoolsFromDB(ctx context.Context) ([]*LoadBalancingPoo
 // loadPoolWorkspaces loads workspace configurations for a specific pool
 func (pm *PoolManager) loadPoolWorkspaces(ctx context.Context, poolID string) ([]PoolWorkspace, error) {
 	query := `
-		SELECT workspace_id, weight, enabled
-		FROM pool_workspaces
+		SELECT provider_id, weight, enabled
+		FROM pool_providers
 		WHERE pool_id = ? AND enabled = true
-		ORDER BY workspace_id`
+		ORDER BY provider_id`
 
 	rows, err := pm.db.QueryxContext(ctx, query, poolID)
 	if err != nil {
@@ -156,7 +156,7 @@ func (pm *PoolManager) loadPoolWorkspaces(ctx context.Context, poolID string) ([
 	
 	for rows.Next() {
 		var ws PoolWorkspace
-		err := rows.Scan(&ws.WorkspaceID, &ws.Weight, &ws.Enabled)
+		err := rows.Scan(&ws.ProviderID, &ws.Weight, &ws.Enabled)
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan workspace row: %w", err)
 		}
@@ -276,12 +276,12 @@ func (pm *PoolManager) CreatePool(ctx context.Context, pool *LoadBalancingPool) 
 	// Insert pool workspaces
 	for _, ws := range pool.Workspaces {
 		wsQuery := `
-			INSERT INTO pool_workspaces (pool_id, workspace_id, weight, enabled)
+			INSERT INTO pool_providers (pool_id, provider_id, weight, enabled)
 			VALUES (?, ?, ?, ?)`
 		
-		_, err = tx.ExecContext(ctx, wsQuery, pool.ID, ws.WorkspaceID, ws.Weight, ws.Enabled)
+		_, err = tx.ExecContext(ctx, wsQuery, pool.ID, ws.ProviderID, ws.Weight, ws.Enabled)
 		if err != nil {
-			return fmt.Errorf("failed to insert workspace %s for pool %s: %w", ws.WorkspaceID, pool.ID, err)
+			return fmt.Errorf("failed to insert workspace %s for pool %s: %w", ws.ProviderID, pool.ID, err)
 		}
 	}
 
@@ -344,7 +344,7 @@ func (pm *PoolManager) UpdatePool(ctx context.Context, pool *LoadBalancingPool) 
 	}
 
 	// Delete existing workspaces
-	_, err = tx.ExecContext(ctx, "DELETE FROM pool_workspaces WHERE pool_id = ?", pool.ID)
+	_, err = tx.ExecContext(ctx, "DELETE FROM pool_providers WHERE pool_id = ?", pool.ID)
 	if err != nil {
 		return fmt.Errorf("failed to delete existing workspaces: %w", err)
 	}
@@ -352,12 +352,12 @@ func (pm *PoolManager) UpdatePool(ctx context.Context, pool *LoadBalancingPool) 
 	// Insert updated workspaces
 	for _, ws := range pool.Workspaces {
 		wsQuery := `
-			INSERT INTO pool_workspaces (pool_id, workspace_id, weight, enabled)
+			INSERT INTO pool_providers (pool_id, provider_id, weight, enabled)
 			VALUES (?, ?, ?, ?)`
 		
-		_, err = tx.ExecContext(ctx, wsQuery, pool.ID, ws.WorkspaceID, ws.Weight, ws.Enabled)
+		_, err = tx.ExecContext(ctx, wsQuery, pool.ID, ws.ProviderID, ws.Weight, ws.Enabled)
 		if err != nil {
-			return fmt.Errorf("failed to insert workspace %s for pool %s: %w", ws.WorkspaceID, pool.ID, err)
+			return fmt.Errorf("failed to insert workspace %s for pool %s: %w", ws.ProviderID, pool.ID, err)
 		}
 	}
 
@@ -389,7 +389,7 @@ func (pm *PoolManager) DeletePool(ctx context.Context, poolID string) error {
 	defer tx.Rollback()
 
 	// Delete pool workspaces (foreign key constraint will handle this, but explicit for clarity)
-	_, err = tx.ExecContext(ctx, "DELETE FROM pool_workspaces WHERE pool_id = ?", poolID)
+	_, err = tx.ExecContext(ctx, "DELETE FROM pool_providers WHERE pool_id = ?", poolID)
 	if err != nil {
 		return fmt.Errorf("failed to delete pool workspaces: %w", err)
 	}
@@ -430,12 +430,12 @@ func (pm *PoolManager) RecordSelection(ctx context.Context, selection *LoadBalan
 	}
 
 	query := `
-		INSERT INTO load_balancing_selections (pool_id, workspace_id, sender_email, selected_at, success, capacity_score)
+		INSERT INTO load_balancing_selections (pool_id, provider_id, sender_email, selected_at, success, capacity_score)
 		VALUES (?, ?, ?, ?, ?, ?)`
 
 	_, err := pm.db.ExecContext(ctx, query, 
 		selection.PoolID, 
-		selection.WorkspaceID, 
+		selection.ProviderID, 
 		selection.SenderEmail, 
 		selection.SelectedAt, 
 		selection.Success, 
@@ -455,7 +455,7 @@ func (pm *PoolManager) GetSelectionHistory(ctx context.Context, poolID string, l
 	}
 
 	query := `
-		SELECT id, pool_id, workspace_id, sender_email, selected_at, success, capacity_score
+		SELECT id, pool_id, provider_id, sender_email, selected_at, success, capacity_score
 		FROM load_balancing_selections
 		WHERE pool_id = ?
 		ORDER BY selected_at DESC
@@ -474,7 +474,7 @@ func (pm *PoolManager) GetSelectionHistory(ctx context.Context, poolID string, l
 		err := rows.Scan(
 			&selection.ID,
 			&selection.PoolID,
-			&selection.WorkspaceID,
+			&selection.ProviderID,
 			&selection.SenderEmail,
 			&selection.SelectedAt,
 			&selection.Success,
@@ -505,7 +505,7 @@ func (pm *PoolManager) GetPoolStats(ctx context.Context, poolID string, hours in
 			COUNT(*) as total_selections,
 			SUM(CASE WHEN success = true THEN 1 ELSE 0 END) as successful_selections,
 			AVG(capacity_score) as avg_capacity_score,
-			COUNT(DISTINCT workspace_id) as workspaces_used,
+			COUNT(DISTINCT provider_id) as workspaces_used,
 			COUNT(DISTINCT sender_email) as unique_senders
 		FROM load_balancing_selections
 		WHERE pool_id = ? AND selected_at >= DATE_SUB(NOW(), INTERVAL ? HOUR)`
@@ -576,7 +576,7 @@ func (pm *PoolManager) ValidatePoolConfiguration(pool *LoadBalancingPool) error 
 
 	// Validate workspaces
 	for i, ws := range pool.Workspaces {
-		if ws.WorkspaceID == "" {
+		if ws.ProviderID == "" {
 			return fmt.Errorf("workspace %d: workspace ID is required", i)
 		}
 

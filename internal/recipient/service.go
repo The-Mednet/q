@@ -31,7 +31,7 @@ func (s *Service) UpsertRecipient(recipient *models.Recipient) error {
 
 	query := `
 		INSERT INTO recipients (
-			email_address, workspace_id, user_id, campaign_id, 
+			email_address, provider_id, user_id, campaign_id, 
 			first_name, last_name, status, opt_in_date, opt_out_date,
 			bounce_count, last_bounce_date, bounce_type, metadata
 		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -52,9 +52,8 @@ func (s *Service) UpsertRecipient(recipient *models.Recipient) error {
 
 	result, err := s.db.Exec(query,
 		recipient.EmailAddress,
-		recipient.WorkspaceID,
-		recipient.UserID,
-		recipient.CampaignID,
+		recipient.ProviderID,
+		recipient.InvitationID,
 		recipient.FirstName,
 		recipient.LastName,
 		recipient.Status,
@@ -83,12 +82,12 @@ func (s *Service) UpsertRecipient(recipient *models.Recipient) error {
 // GetRecipient retrieves a recipient by email and workspace
 func (s *Service) GetRecipient(email, workspaceID string) (*models.Recipient, error) {
 	query := `
-		SELECT id, email_address, workspace_id, user_id, campaign_id,
+		SELECT id, email_address, provider_id, user_id, campaign_id,
 			first_name, last_name, status, opt_in_date, opt_out_date,
 			bounce_count, last_bounce_date, bounce_type, metadata,
 			created_at, updated_at
 		FROM recipients
-		WHERE email_address = ? AND workspace_id = ?
+		WHERE email_address = ? AND provider_id = ?
 	`
 
 	recipient := &models.Recipient{}
@@ -100,7 +99,7 @@ func (s *Service) GetRecipient(email, workspaceID string) (*models.Recipient, er
 	err := s.db.QueryRow(query, email, workspaceID).Scan(
 		&recipient.ID,
 		&recipient.EmailAddress,
-		&recipient.WorkspaceID,
+		&recipient.ProviderID,
 		&userID,
 		&campaignID,
 		&firstName,
@@ -124,11 +123,8 @@ func (s *Service) GetRecipient(email, workspaceID string) (*models.Recipient, er
 	}
 
 	// Handle nullable fields
-	if userID.Valid {
-		recipient.UserID = &userID.String
-	}
 	if campaignID.Valid {
-		recipient.CampaignID = &campaignID.String
+		recipient.InvitationID = &campaignID.String
 	}
 	if firstName.Valid {
 		recipient.FirstName = &firstName.String
@@ -216,20 +212,19 @@ func (s *Service) processRecipientsInTransaction(tx *sql.Tx, message *models.Mes
 func (s *Service) upsertRecipientInTransaction(tx *sql.Tx, email string, message *models.Message) (int64, error) {
 	// Check if recipient exists
 	var recipientID int64
-	query := `SELECT id FROM recipients WHERE email_address = ? AND workspace_id = ?`
+	query := `SELECT id FROM recipients WHERE email_address = ? AND provider_id = ?`
 	err := tx.QueryRow(query, email, message.ProviderID).Scan(&recipientID)
 
 	if err == sql.ErrNoRows {
 		// Create new recipient
 		insertQuery := `
-			INSERT INTO recipients (email_address, workspace_id, user_id, campaign_id, status)
-			VALUES (?, ?, ?, ?, ?)
+			INSERT INTO recipients (email_address, provider_id, invitation_id, status)
+			VALUES (?, ?, ?, ?)
 		`
 		result, err := tx.Exec(insertQuery,
 			email,
 			message.ProviderID,
-			message.UserID,
-			message.CampaignID,
+			message.InvitationID,
 			models.RecipientStatusActive,
 		)
 		if err != nil {
@@ -268,7 +263,7 @@ func (s *Service) UpdateDeliveryStatus(messageID string, email string, status mo
 			mr.sent_at = CASE WHEN ? = 'SENT' THEN CURRENT_TIMESTAMP ELSE mr.sent_at END,
 			mr.bounce_reason = ?,
 			mr.updated_at = CURRENT_TIMESTAMP
-		WHERE mr.message_id = ? AND r.email_address = ? AND m.workspace_id = r.workspace_id
+		WHERE mr.message_id = ? AND r.email_address = ? AND m.provider_id = r.provider_id
 	`
 
 	_, err := s.db.Exec(query, status, string(status), bounceReason, messageID, email)
@@ -298,7 +293,7 @@ func (s *Service) updateRecipientBounceStatus(email, messageID string, bounceRea
 
 	query := `
 		UPDATE recipients r
-		JOIN messages m ON r.workspace_id = m.workspace_id
+		JOIN messages m ON r.provider_id = m.provider_id
 		SET r.bounce_count = r.bounce_count + 1,
 			r.last_bounce_date = CURRENT_TIMESTAMP,
 			r.bounce_type = ?,
@@ -438,7 +433,7 @@ func (s *Service) GetRecipientSummary(email, workspaceID string) (*models.Recipi
 }
 
 // GetCampaignStats gets aggregated stats for a campaign
-func (s *Service) GetCampaignStats(campaignID, workspaceID string) (*models.CampaignRecipientStats, error) {
+func (s *Service) GetCampaignStats(campaignID, workspaceID string) (*models.InvitationRecipientStats, error) {
 	query := `
 		SELECT 
 			COUNT(DISTINCT mr.recipient_id) as total_recipients,
@@ -450,11 +445,11 @@ func (s *Service) GetCampaignStats(campaignID, workspaceID string) (*models.Camp
 		FROM message_recipients mr
 		JOIN recipients r ON mr.recipient_id = r.id
 		JOIN messages m ON mr.message_id = m.id
-		WHERE m.campaign_id = ? AND r.workspace_id = ?
+		WHERE m.campaign_id = ? AND r.provider_id = ?
 	`
 
-	var stats models.CampaignRecipientStats
-	stats.CampaignID = campaignID
+	var stats models.InvitationRecipientStats
+	stats.InvitationID = campaignID
 
 	err := s.db.QueryRow(query, campaignID, workspaceID).Scan(
 		&stats.TotalRecipients,
